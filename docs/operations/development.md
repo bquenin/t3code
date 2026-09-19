@@ -154,6 +154,18 @@ DMGs default to the host architecture. Use `--arch` to choose another target and
 to retain packaging files for inspection. Run `vp run dist:desktop:artifact --help` for other
 options.
 
+Desktop artifacts built outside a clean release tag carry the server compiled from the same
+checkout. SSH connections upload that bundle and cache it by SHA-256, so local changes are
+installed even when `package.json` still has the last release's version. The SSH host needs a
+supported Node.js version, npm/npx, and the compiler tools required by node-pty (Python, make,
+and C++ on Linux). Native dependencies use a frozen lockfile and the repository's patches.
+Clean release builds continue to download the corresponding self-contained CLI archive.
+
+The app restarts servers it manages when the bundle changes. An independently started server
+keeps running until its owner restarts it; installing a bundle does not interrupt its turns.
+Installed source runtimes live in `~/.t3/runtime/source/<sha256>/`, with a `t3` launcher for
+use by a supervisor. Keep that supervisor pointed at the bundle you intend to run.
+
 ### Linux AppImage prerequisites
 
 Build on Linux because the browser-secret helper links against the host's libsecret. Install
