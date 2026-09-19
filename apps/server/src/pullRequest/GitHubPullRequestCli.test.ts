@@ -9,6 +9,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as SourceControlRateLimit from "../sourceControl/SourceControlRateLimit.ts";
 import * as GitHubGraphQlBudget from "../sourceControl/githubGraphQlBudget.ts";
@@ -650,28 +651,51 @@ layer("GitHubPullRequestCli.layer", (it) => {
     }),
   );
 
-  it.effect("reads a host that refuses the stacks preview as not stacked", () =>
+  it.effect.each([
+    ["gh: Not Found (HTTP 404)", null],
+    ["HTTP 404: Not Found (https://github.example/api/v3/repos/acme/web/stacks)", null],
+    ["gh: Resource not accessible by integration (HTTP 403)", "GitHubCliCommandError"],
+    ["gh: Service Unavailable (HTTP 503)", "GitHubCliCommandError"],
+    ["dial tcp: lookup github.example: no such host", "GitHubCliCommandError"],
+    ["To get started with GitHub CLI, please run: gh auth login", "GitHubCliAuthenticationError"],
+    ["gh: Too Many Requests (HTTP 429)", "GitHubCliRateLimitError"],
+  ] as const)("classifies the raw stacks API failure: %s", ([stderr, expectedError]) =>
     Effect.gen(function* () {
-      // The CLI classifies a missing preview endpoint as not found.
-      mockedExecute.mockReturnValueOnce(
-        Effect.fail(
-          new GitHubCli.GitHubPullRequestNotFoundError({
-            command: "gh",
-            cwd: "/w",
-            cause: new Error("HTTP 404: Not Found (https://api.github.com/repos/acme/web/stacks)"),
-          }),
-        ),
+      const vcs = yield* VcsProcess.make.pipe(
+        Effect.provideService(ProcessRunner.ProcessRunner, {
+          run: () =>
+            Effect.succeed({
+              stdout: "",
+              stderr,
+              code: ChildProcessSpawner.ExitCode(1),
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            }),
+        }),
       );
-      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
-
-      const stack = yield* cli.getPullRequestStack({
+      const github = yield* GitHubCli.make.pipe(
+        Effect.provideService(VcsProcess.VcsProcess, vcs),
+        Effect.provide(Layer.merge(GitHubGraphQlBudget.layer, SourceControlRateLimit.layer)),
+      );
+      const cli = yield* GitHubPullRequestCli.make.pipe(
+        Effect.provideService(GitHubCli.GitHubCli, github),
+        Effect.provide(GitHubGraphQlBudget.layer),
+      );
+      const read = cli.getPullRequestStack({
         cwd: "/w",
         repository: "acme/web",
-        host: "github.com",
+        host: "github.example",
         number: 7,
       });
-
-      assert.isNull(stack);
+      if (expectedError === null) {
+        assert.isNull(yield* read);
+      } else {
+        const error = yield* Effect.flip(read);
+        assert.strictEqual(error._tag, expectedError);
+      }
     }),
   );
 
