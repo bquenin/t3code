@@ -5,6 +5,11 @@ import {
 } from "@t3tools/shared/sourceControl";
 import { normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
+import { changeRequestProviderKind, parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
+import {
+  normalizeThreadPullRequestKey,
+  threadPullRequestKeysEqual,
+} from "@t3tools/shared/threadPullRequests";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -83,6 +88,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as ProjectionStoreV2 from "../orchestration-v2/ProjectionStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import {
@@ -585,6 +591,7 @@ export const make = Effect.gen(function* () {
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
+  const threadProjections = yield* ProjectionStoreV2.ProjectionStoreV2;
 
   const refineUnknownProjectKinds = (
     projects: ReadonlyArray<OrchestrationProjectShell>,
@@ -761,6 +768,51 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  /** Saved links identify their host without requiring a Git checkout at the project root. */
+  const linkedProject = Effect.fn("PullRequestService.linkedProject")(
+    function* (ref: PullRequestRef) {
+      if (ref.host === undefined) return null;
+      const project = yield* projects.getShell(ref.projectId);
+      if (Option.isNone(project)) return null;
+      const key = normalizeThreadPullRequestKey({ ...ref, host: ref.host });
+      // Links live on thread shells; archived threads keep theirs, so search both.
+      const snapshot = yield* threadProjections.getShellSnapshot();
+      const links = [...snapshot.threads, ...snapshot.archivedThreads]
+        .filter((thread) => thread.projectId === project.value.id)
+        .flatMap((thread) => thread.pullRequests ?? [])
+        .filter((link) => threadPullRequestKeysEqual(link, key));
+      for (const link of links) {
+        if (link.source === "stack-dismissed") continue;
+        const parsed = parseChangeRequestUrl(link.url);
+        if (parsed === null || !threadPullRequestKeysEqual(parsed, key)) continue;
+        const kind = changeRequestProviderKind(link.url);
+        // Azure's CLI still needs the checkout's organization and project configuration.
+        if (kind === null || kind === "azure-devops") continue;
+        const api = registry.get(kind);
+        if (api === null) continue;
+        return {
+          cursorKey: listCursorKey(key.host, key.repository),
+          project: project.value,
+          api: withRateLimitBackoff(api, key.host, rateLimits),
+          repository: key.repository,
+          host: key.host,
+          remote: normalizeGitRemoteUrl(`https://${key.host}/${key.repository}`),
+          // Only Azure keys its repositories itself, and Azure links are skipped above.
+          repositoryKey: null,
+        } satisfies SupportedProject;
+      }
+      return null;
+    },
+    Effect.mapError(
+      (cause) =>
+        new PullRequestOperationError({
+          operation: "resolveRepository",
+          detail: "The linked pull request's project could not be read.",
+          cause,
+        }),
+    ),
+  );
+
   /**
    * Azure derives its organization from the checkout, so it requires a matching
    * repository.
@@ -805,42 +857,51 @@ export const make = Effect.gen(function* () {
               ) ??
               onHost.find((candidate) => candidate.repositoryKey === null);
             if (route === undefined) {
-              return Effect.gen(function* () {
-                const detected = detectSourceControlProviderFromRemoteUrl(
-                  `https://${host}/${repository}.git`,
-                );
-                // GitHub Enterprise Server qualifies too: the GitHub adapter targets the
-                // reference's host explicitly and only uses a credential issued for that host.
-                const provider =
-                  detected?.kind === "github" || ["bitbucket.org", "codeberg.org"].includes(host)
-                    ? detected
-                    : null;
-                const api = provider === null ? null : registry.get(provider.kind);
-                if (api !== null) {
-                  const selected = yield* projects.getShell(ref.projectId).pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new PullRequestOperationError({
-                          operation: "resolveRepository",
-                          detail: "The selected project could not be read.",
-                          cause,
-                        }),
-                    ),
-                  );
-                  if (Option.isSome(selected)) {
-                    return {
-                      cursorKey: listCursorKey(host, repository),
-                      project: selected.value,
-                      api: withRateLimitBackoff(api, host, rateLimits),
-                      repository,
-                      host,
-                      remote: normalizeGitRemoteUrl(`https://${host}/${repository}`),
-                      repositoryKey: null,
-                    };
-                  }
-                }
-                return yield* new PullRequestUnavailableError({ reason: "provider-unsupported" });
-              });
+              return linkedProject(ref).pipe(
+                Effect.flatMap((linked) =>
+                  linked !== null
+                    ? Effect.succeed(linked)
+                    : Effect.gen(function* () {
+                        const detected = detectSourceControlProviderFromRemoteUrl(
+                          `https://${host}/${repository}.git`,
+                        );
+                        // GitHub Enterprise Server qualifies too: the GitHub adapter targets the
+                        // reference's host explicitly and only uses a credential issued for that host.
+                        const provider =
+                          detected?.kind === "github" ||
+                          ["bitbucket.org", "codeberg.org"].includes(host)
+                            ? detected
+                            : null;
+                        const api = provider === null ? null : registry.get(provider.kind);
+                        if (api !== null) {
+                          const selected = yield* projects.getShell(ref.projectId).pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new PullRequestOperationError({
+                                  operation: "resolveRepository",
+                                  detail: "The selected project could not be read.",
+                                  cause,
+                                }),
+                            ),
+                          );
+                          if (Option.isSome(selected)) {
+                            return {
+                              cursorKey: listCursorKey(host, repository),
+                              project: selected.value,
+                              api: withRateLimitBackoff(api, host, rateLimits),
+                              repository,
+                              host,
+                              remote: normalizeGitRemoteUrl(`https://${host}/${repository}`),
+                              repositoryKey: null,
+                            };
+                          }
+                        }
+                        return yield* new PullRequestUnavailableError({
+                          reason: "provider-unsupported",
+                        });
+                      }),
+                ),
+              );
             }
             return Effect.succeed(
               route.repositoryKey !== null ||

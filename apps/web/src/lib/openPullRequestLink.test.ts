@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   changeRequestRepositoryUrl,
   findProjectForChangeRequest,
+  findProjectForLinkedChangeRequest,
   findProjectOnChangeRequestHost,
   gitHubPullRequestBrowserUrl,
   matchesLinkedPullRequestUrl,
@@ -10,7 +11,13 @@ import {
   pullRequestCandidateUrlFromReferenceAutolink,
   shouldOpenPullRequestExternally,
 } from "./openPullRequestLink";
-import { ProjectId, type RepositoryIdentity } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  type RepositoryIdentity,
+  type ThreadPullRequestLink,
+} from "@t3tools/contracts";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { normalizeGitRemoteUrl } from "@t3tools/shared/git";
 
 function repositoryIdentity(
@@ -24,6 +31,83 @@ function repositoryIdentity(
     locator: { source: "git-remote", remoteName: "origin", remoteUrl },
   };
 }
+
+describe("findProjectForLinkedChangeRequest", () => {
+  const parent = {
+    id: ProjectId.make("home"),
+    environmentId: EnvironmentId.make("mac"),
+    workspaceRoot: "/Users/person",
+    repositoryIdentity: null,
+  } as EnvironmentProject;
+  const link: ThreadPullRequestLink = {
+    host: "github.acme.test",
+    repository: "team/nested-repo",
+    number: 7,
+    url: "https://github.acme.test/team/nested-repo/pull/7",
+    source: "agent",
+    linkedAt: "2026-07-01T00:00:00Z",
+    snapshot: null,
+    stack: null,
+  };
+  const thread = {
+    environmentId: parent.environmentId,
+    projectId: parent.id,
+    pullRequests: [link],
+  };
+
+  it("opens a saved PR from a project rooted above the repository", () => {
+    expect(findProjectForChangeRequest([parent], parseChangeRequestUrl(link.url)!)).toBeUndefined();
+    expect(findProjectForLinkedChangeRequest([parent], `${link.url}/files`, thread)).toBe(parent);
+  });
+
+  it("keeps the linked PR on its own environment when project ids overlap", () => {
+    const remote = { ...parent, environmentId: EnvironmentId.make("cws") };
+    expect(findProjectForLinkedChangeRequest([remote, parent], link.url, thread)).toBe(parent);
+    expect(findProjectForLinkedChangeRequest([remote], link.url, thread)).toBeUndefined();
+  });
+
+  it.each([
+    "https://github.acme.test/team/nested-repo/pull/8",
+    "https://github.acme.test/team/other-repo/pull/7",
+    "https://github.com/team/nested-repo/pull/7",
+    "https://github.acme.test.evil.test/team/nested-repo/pull/7",
+  ])("leaves an unlinked PR as an ordinary link: %s", (url) => {
+    expect(findProjectForLinkedChangeRequest([parent], url, thread)).toBeUndefined();
+  });
+
+  it("does not borrow a removed project or a dismissed link", () => {
+    expect(findProjectForLinkedChangeRequest([], link.url, thread)).toBeUndefined();
+    expect(findProjectForLinkedChangeRequest([parent], link.url, null)).toBeUndefined();
+    expect(
+      findProjectForLinkedChangeRequest([parent], link.url, {
+        ...thread,
+        pullRequests: [{ ...link, source: "stack-dismissed" }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps Forgejo ports distinct when a project has no repository identity", () => {
+    const url = "http://forge.acme.test:3000/git/team/repo/pulls/7";
+    const forgeThread = {
+      ...thread,
+      pullRequests: [{ ...link, ...parseChangeRequestUrl(url)!, url }],
+    };
+    expect(findProjectForLinkedChangeRequest([parent], url, forgeThread)).toBe(parent);
+    expect(
+      findProjectForLinkedChangeRequest([parent], url.replace(":3000", ":4000"), forgeThread),
+    ).toBeUndefined();
+  });
+
+  it("still requires a matching checkout for Azure", () => {
+    const url = "https://dev.azure.com/org/project/_git/repo/pullrequest/7";
+    expect(
+      findProjectForLinkedChangeRequest([parent], url, {
+        ...thread,
+        pullRequests: [{ ...link, ...parseChangeRequestUrl(url)!, url }],
+      }),
+    ).toBeUndefined();
+  });
+});
 
 describe("gitHubPullRequestBrowserUrl", () => {
   it("uses the requested GitHub repository instead of the project's default repository", () => {
