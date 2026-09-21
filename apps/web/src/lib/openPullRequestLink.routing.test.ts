@@ -36,31 +36,39 @@ const state = vi.hoisted(() => {
   };
 });
 
-vi.mock("react", () => ({ useCallback: <T>(callback: T) => callback }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => state.navigate }));
 vi.mock("../browser/useOpenLink", () => ({ useOpenLink: () => vi.fn() }));
 vi.mock("../components/ui/toast", () => ({ toastManager: {}, stackedThreadToast: vi.fn() }));
+vi.mock("../hooks/useSettings", () => ({
+  useClientSettings: <T>(select: (settings: { pullRequestLinksOpenInApp: boolean }) => T) =>
+    select({ pullRequestLinksOpenInApp: true }),
+}));
 vi.mock("../rightPanelStore", () => ({
   useRightPanelStore: { getState: () => ({ openPullRequest: state.openPullRequest }) },
 }));
 vi.mock("../state/environments", () => ({ usePrimaryEnvironmentId: () => "mac" }));
-vi.mock("../state/entities", () => ({
-  useProjects: () => state.projects,
-  useServerConfigs: () =>
-    new Map(
-      state.projects.map(({ environmentId }) => [
-        environmentId,
-        {
-          environment: {
-            capabilities: {
-              pullRequests: true,
-              threadPullRequests: true,
-              ...(state.supported ? { pullRequestsWithoutCheckout: true } : {}),
+vi.mock("../state/server", () => ({ environmentServerConfigsAtom: {}, serverEnvironment: {} }));
+vi.mock("../rpc/atomRegistry", () => ({
+  appAtomRegistry: {
+    get: () =>
+      new Map(
+        state.projects.map(({ environmentId }) => [
+          environmentId,
+          {
+            environment: {
+              capabilities: {
+                pullRequests: true,
+                threadPullRequests: true,
+                ...(state.supported ? { pullRequestsWithoutCheckout: true } : {}),
+              },
             },
           },
-        },
-      ]),
-    ),
+        ]),
+      ),
+  },
+}));
+vi.mock("../state/entities", () => ({
+  useProjects: () => state.projects,
   readThreadShell: (ref: { environmentId: string; threadId: string }) =>
     state.threads.find(
       (thread) => thread.environmentId === ref.environmentId && thread.id === ref.threadId,
