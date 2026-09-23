@@ -705,50 +705,18 @@ export function useThreadActions() {
     const wokeAt = resolved
       ? threadWokeAt(resolved.thread, { now: new Date().toISOString() })
       : null;
-    // Settling also drops the pin and the snooze server-side, so Undo
-    // has to put those back as well.
-    const pinOrderKey = resolved?.thread.pinnedAt != null ? resolved.thread.pinOrderKey : null;
-    const wasPinned = resolved?.thread.pinnedAt != null;
-    const snoozedUntil = resolved?.thread.snoozedUntil ?? null;
     // An older unpin/snooze Undo would re-pin or re-snooze, and the server
     // treats either as a promotion that un-settles; settling supersedes them.
     ThreadUndo.invalidate("pin", scopedThreadKey(target));
     ThreadUndo.invalidate("snooze", scopedThreadKey(target));
-    const action = ThreadUndo.begin("settle", scopedThreadKey(target));
+    // Local patch: settling never shows the "Settled" undo notice.
     const result = await settleThreadMutation({
       environmentId: target.environmentId,
       input: { threadId: target.threadId },
     });
-    if (result._tag !== "Success") {
-      action.finish();
-      return result;
-    }
-    if (wokeAt !== null) {
+    if (result._tag === "Success" && wokeAt !== null) {
       markThreadVisited(scopedThreadKey(target), wokeAt);
     }
-    showThreadUndoNotice({
-      action: "Settled",
-      claim: action,
-      undo: async () => {
-        const unsettled = await unsettleThread(target);
-        if (unsettled._tag !== "Success") return unsettled;
-        if (wasPinned) {
-          const pinned = await pinThread(
-            target,
-            pinOrderKey == null ? {} : { orderKey: pinOrderKey },
-          );
-          if (pinned._tag !== "Success") return pinned;
-        }
-        if (snoozedUntil !== null) {
-          return snoozeThreadMutation({
-            environmentId: target.environmentId,
-            input: { threadId: target.threadId, snoozedUntil },
-          });
-        }
-        return unsettled;
-      },
-      failureTitle: "Failed to undo settle",
-    });
     return result;
   };
 
