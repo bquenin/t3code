@@ -156,6 +156,20 @@ describe("AcpRegistrySupport", () => {
     });
   });
 
+  it("reduces Cursor's combined model ids to the base model", () => {
+    expect(
+      AcpRegistrySupport.resolveAcpRegistryCursorModelId(
+        "grok-4.7[context=256k,reasoning_effort=high,fast=true]",
+      ),
+    ).toBe("grok-4.7");
+    expect(AcpRegistrySupport.resolveAcpRegistryCursorModelId("gemini-3.1-pro[]")).toBe(
+      "gemini-3.1-pro",
+    );
+    expect(AcpRegistrySupport.resolveAcpRegistryCursorModelId("claude-opus-5-5")).toBe(
+      "claude-opus-5-5",
+    );
+  });
+
   it("maps supported Node platforms to ACP Registry target keys", () => {
     expect(AcpRegistrySupport.resolveAcpRegistryPlatformTarget("darwin", "arm64")).toBe(
       "darwin-aarch64",

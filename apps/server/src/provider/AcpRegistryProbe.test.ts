@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
@@ -424,6 +426,62 @@ describe("ACP Registry probe", () => {
       Effect.provide(NodeServices.layer),
       Effect.scoped,
     ),
+  );
+
+  it.live("asks only Cursor for its parameterized model picker", () =>
+    Effect.gen(function* () {
+      const directory = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-acp-probe-")),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => NodeFSP.rm(directory, { recursive: true, force: true })),
+      );
+      const initializeMeta = (agentId: string) =>
+        Effect.gen(function* () {
+          const requestLogPath = NodePath.join(directory, `${agentId}.ndjson`);
+          yield* probeAcpRegistryConfiguration({
+            instanceId,
+            settings: decodeSettings({ agentId }),
+            cwd: process.cwd(),
+            environment: process.env,
+          }).pipe(
+            Effect.provideService(
+              AcpRegistrySupport.AcpRegistryCatalog,
+              AcpRegistrySupport.AcpRegistryCatalog.of({
+                search: () => Effect.die("unused search"),
+                prepare: () => Effect.die("unused prepare"),
+                inspect: () => Effect.die("unused inspect"),
+                uninstallManagedBinary: () => Effect.die("unused uninstall"),
+                resolve: () =>
+                  Effect.succeed({
+                    agent: {
+                      id: agentId,
+                      name: agentId,
+                      version: "1.0.0",
+                      description: "ACP probe test agent",
+                      distribution: { npx: { package: `${agentId}@1.0.0` } },
+                    },
+                    distribution: "npx",
+                    spawn: {
+                      command: "node",
+                      args: [mockAgentPath],
+                      env: { ...process.env, T3_ACP_REQUEST_LOG_PATH: requestLogPath },
+                    },
+                  }),
+              }),
+            ),
+          );
+          const requests = (yield* Effect.promise(() => NodeFSP.readFile(requestLogPath, "utf8")))
+            .split("\n")
+            .filter((line) => line.trim().length > 0)
+            .map((line) => JSON.parse(line));
+          return requests.find((request) => request.method === "initialize")?.params
+            ?.clientCapabilities?._meta;
+        });
+
+      expect(yield* initializeMeta("cursor")).toEqual({ parameterizedModelPicker: true });
+      expect(yield* initializeMeta("mock-agent")).toBeUndefined();
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
   it.effect("includes package resolution in the probe timeout", () =>
