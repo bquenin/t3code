@@ -1,6 +1,8 @@
 import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -91,6 +93,30 @@ it.layer(NodeServices.layer)("EnvironmentAuth administrative operations", (it) =
       expect("token" in (listedBeforeRevoke[0] ?? {})).toBe(false);
       expect(revoked).toBe(true);
       expect(listedAfterRevoke).toHaveLength(0);
+    }).pipe(Effect.provide(layerEnvironmentAuth())),
+  );
+
+  it.effect("issues an MCP client token with its access as the ceiling and a custom ttl", () =>
+    Effect.gen(function* () {
+      const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const sessionCredentials = yield* SessionStore.SessionStore;
+
+      const before = yield* DateTime.now;
+      const issued = yield* environmentAuth.issueMcpClientSession({
+        label: "hub",
+        access: "full-access",
+        client: { deviceType: "bot" },
+        ttl: Duration.days(365),
+      });
+      const verified = yield* sessionCredentials.verify(issued.token);
+
+      expect(verified.sessionId).toBe(issued.sessionId);
+      expect(verified.runtimeModeCeiling).toBe("full-access");
+      expect(verified.scopes).toEqual(EnvironmentAuth.mcpClientScopes("full-access"));
+      expect(issued.client.label).toBe("hub");
+      expect(
+        DateTime.toEpochMillis(issued.expiresAt) - DateTime.toEpochMillis(before),
+      ).toBeGreaterThan(Duration.toMillis(Duration.days(364)));
     }).pipe(Effect.provide(layerEnvironmentAuth())),
   );
 });

@@ -45,11 +45,14 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import * as PeerEnvironments from "./PeerEnvironments.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 
+const layerPeerEnvironmentsStub = Layer.mock(PeerEnvironments.PeerEnvironments)({});
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+  Layer.provide(layerPeerEnvironmentsStub),
 );
 
 // Effect returns a declared tool failure as `isError` with its encoded payload

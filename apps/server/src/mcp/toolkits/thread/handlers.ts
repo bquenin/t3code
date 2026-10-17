@@ -101,20 +101,24 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       };
     }),
   ),
-  t3_thread_search: McpToolAccess.reads((input) =>
-    Effect.gen(function* () {
-      const { caller } = yield* readCaller();
-      const { projectId: requested, ...query } = input;
-      const projectId = requested ?? caller?.projectId;
-      const threadSearch = yield* ThreadSearch.ThreadSearch;
-      const result = yield* threadSearch.search(query).pipe(Effect.mapError(unavailable));
-      return {
-        matches:
-          projectId === undefined
-            ? result.matches
-            : result.matches.filter((match) => match.projectId === projectId),
-      };
-    }),
+  t3_thread_search: McpToolAccess.forwardsToPeer(
+    ThreadToolkit.tools.t3_thread_search,
+    { access: "reads" },
+    McpToolAccess.reads((input) =>
+      Effect.gen(function* () {
+        const { caller } = yield* readCaller();
+        const { projectId: requested, environment: _environment, ...query } = input;
+        const projectId = requested ?? caller?.projectId;
+        const threadSearch = yield* ThreadSearch.ThreadSearch;
+        const result = yield* threadSearch.search(query).pipe(Effect.mapError(unavailable));
+        return {
+          matches:
+            projectId === undefined
+              ? result.matches
+              : result.matches.filter((match) => match.projectId === projectId),
+        };
+      }),
+    ),
   ),
   t3_thread_fork: writesThread((input) =>
     Effect.gen(function* () {
