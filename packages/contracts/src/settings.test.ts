@@ -11,6 +11,7 @@ import {
   globalIdleCompaction,
   idleCompactionPatch,
   requiredScopesForProjectMutation,
+  requiredScopesForServerSettingsPatch,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
@@ -321,6 +322,69 @@ it("validates remote device hosts and rejects ambiguous host ids", () => {
     decodeDeviceHostSettings({ deviceHosts: [{ ...host, target: "-oProxyCommand=bad" }] }),
   ).toThrow();
   expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, port: 0 }] })).toThrow();
+});
+
+describe("peer environments", () => {
+  const peer = {
+    label: "build-box",
+    url: "http://127.0.0.1:3790",
+    bearerTokenFile: "/home/user/.t3/peer-token",
+  };
+
+  it("defaults to none and keeps valid entries", () => {
+    expect(decodeServerSettings({}).peerEnvironments).toEqual([]);
+    const decoded = decodeServerSettings({ peerEnvironments: [peer] });
+    expect(decoded.peerEnvironments).toEqual([peer]);
+    expect(encodeServerSettings(decoded).peerEnvironments).toEqual([peer]);
+  });
+
+  it("drops a malformed entry without failing the rest of the settings", () => {
+    const decoded = decodeServerSettings({
+      branchNamePrefix: "kept",
+      peerEnvironments: [
+        peer,
+        { ...peer, label: "Not A Slug" },
+        { ...peer, label: "local" },
+        { ...peer, label: "relative-token", bearerTokenFile: "peer-token" },
+        { label: "no-url", bearerTokenFile: peer.bearerTokenFile },
+      ],
+    });
+    expect(decoded.peerEnvironments).toEqual([peer]);
+    expect(decoded.branchNamePrefix).toBe("kept");
+  });
+
+  it("needs terminal access to change peers through a settings patch", () => {
+    expect(requiredScopesForServerSettingsPatch({ peerEnvironments: [] })).toContain(
+      "terminal:operate",
+    );
+    expect(requiredScopesForServerSettingsPatch({ branchNamePrefix: "t3" })).not.toContain(
+      "terminal:operate",
+    );
+  });
+
+  it("rejects invalid or duplicate entries in a settings patch", () => {
+    expect(decodeServerSettingsPatch({ peerEnvironments: [peer] })).toEqual({
+      peerEnvironments: [peer],
+    });
+    expect(() => decodeServerSettingsPatch({ peerEnvironments: [peer, peer] })).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({ peerEnvironments: [{ ...peer, url: "ftp://box" }] }),
+    ).toThrow();
+  });
+
+  it("accepts only an http(s) origin as the peer url", () => {
+    const decodeUrl = (url: string) =>
+      decodeServerSettings({ peerEnvironments: [{ ...peer, url }] }).peerEnvironments.map(
+        (entry) => entry.url,
+      );
+    for (const url of ["http://127.0.0.1:3790", "https://peer.example"]) {
+      expect(decodeUrl(url)).toEqual([url]);
+    }
+    for (const url of ["http://[", "http://host:abc", "http://host/base", "http://host/?a=1"]) {
+      expect(decodeUrl(url)).toEqual([]);
+      expect(() => decodeServerSettingsPatch({ peerEnvironments: [{ ...peer, url }] })).toThrow();
+    }
+  });
 });
 
 describe("resolveProjectProviderInstanceEnabled", () => {

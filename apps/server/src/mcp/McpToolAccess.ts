@@ -1,11 +1,12 @@
 import {
   OrchestratorMcpFailure,
-  type ProviderInteractionMode,
-  type RuntimeMode,
+  ProviderInteractionMode,
+  RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import type * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
@@ -17,6 +18,7 @@ import {
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./OrchestratorMcpService.ts";
+import * as PeerEnvironments from "./PeerEnvironments.ts";
 import {
   assertFullAccess,
   assertLiveCaller,
@@ -190,6 +192,115 @@ export const either = <P, A, E, R, A2, E2, R2>(
   declare((params: P): Effect.Effect<A | A2, E | E2, R | R2> =>
     useFirst(params) ? checkedHandler(first)(params) : checkedHandler(second)(params),
   );
+
+type PeerAccess<P> =
+  | { readonly access: "reads" | "starts" }
+  | {
+      readonly access: "writes";
+      /** Read on the peer first, so the target stays within this caller's limits. */
+      readonly targetThreadId: (params: P) => ThreadId;
+    };
+
+const PeerTarget = Schema.Struct({
+  thread: Schema.Struct({ runtimeMode: RuntimeMode, interactionMode: ProviderInteractionMode }),
+});
+const decodePeerTarget = Schema.decodeUnknownEffect(PeerTarget);
+
+const unreadablePeerResult = (environment: string) =>
+  new OrchestratorMcpFailure({
+    code: "peer_unavailable",
+    message: `Peer environment ${environment} returned a result this server cannot read. The two environments may run different T3 Code versions.`,
+  });
+
+/**
+ * With `environment` set, the call runs on that peer instead of `local`. A
+ * peer thread does not exist here, so the caller's own checks run here and a
+ * write reads its target from the peer to check it; the peer checks its
+ * target again against this environment's token.
+ */
+export const forwardsToPeer = <
+  PS extends Schema.Top & { readonly Encoded: Readonly<Record<string, unknown>> },
+  S extends Schema.Top & { readonly Type: object },
+  P extends {
+    readonly environment?: string | undefined;
+    readonly runtimeMode?: RuntimeMode | undefined;
+    readonly interactionMode?: ProviderInteractionMode | undefined;
+    readonly attachments?: ReadonlyArray<unknown> | undefined;
+  },
+  A,
+  E,
+  R,
+>(
+  tool: { readonly name: string; readonly parametersSchema: PS; readonly successSchema: S },
+  options: PeerAccess<NoInfer<P>>,
+  local: Declaration<(params: P) => Effect.Effect<A, E, R>>,
+) => {
+  const handleLocally = checkedHandler(local);
+  const encodeArgs = Schema.encodeUnknownEffect(tool.parametersSchema);
+  const decodeResult = Schema.decodeUnknownEffect(tool.successSchema);
+  const forward = Effect.fn("mcp.forwardToPeer")(function* (environment: string, params: P) {
+    const { environment: _environment, ...args } = params;
+    const { limits } = yield* options.access === "reads" ? readCaller() : orchestratingCaller;
+    if (params.attachments !== undefined && params.attachments.length > 0) {
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message:
+          "Attachments cannot be forwarded to a peer environment; upload them there or put the content in message.",
+      });
+    }
+    const forwarded =
+      options.access === "starts"
+        ? {
+            ...args,
+            runtimeMode: yield* resolveRuntimeMode(limits.runtimeMode, params.runtimeMode),
+            interactionMode: yield* resolveInteractionMode(
+              limits.interactionMode,
+              params.interactionMode,
+            ),
+          }
+        : args;
+    const encoded = yield* encodeArgs(forwarded).pipe(Effect.mapError(unavailable));
+    const peers = yield* PeerEnvironments.PeerEnvironments;
+    if (options.access === "writes") {
+      const target = yield* peers
+        .callTool(
+          environment,
+          "t3_thread_read",
+          { threadId: options.targetThreadId(params), limit: 1, maxCharsPerItem: 1 },
+          { retryUncertain: true },
+        )
+        .pipe(
+          Effect.flatMap((result) =>
+            decodePeerTarget(result).pipe(Effect.mapError(() => unreadablePeerResult(environment))),
+          ),
+        );
+      // The local path rechecks the target on acceptance. A peer cannot know this
+      // caller's limits, so a mode raised there meanwhile is caught only by the
+      // stored token's ceiling: keep it no broader than the hub's own agents hold.
+      yield* assertTargetWithinLimits(limits, target.thread);
+    }
+    const result = yield* peers.callTool(environment, tool.name, encoded, {
+      retryUncertain: options.access === "reads",
+    });
+    const decoded = yield* decodeResult(result).pipe(
+      Effect.mapError(() => unreadablePeerResult(environment)),
+    );
+    return { ...decoded, environment };
+  });
+  type Forwarded = ReturnType<typeof forward>;
+  return declare(
+    (
+      params: P,
+    ): Effect.Effect<
+      A | Effect.Success<Forwarded>,
+      E | Effect.Error<Forwarded>,
+      R | Effect.Services<Forwarded>
+    > =>
+      params.environment === undefined
+        ? handleLocally(params)
+        : forward(params.environment, params),
+  );
+};
 
 const fullAccessRequired =
   "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.";

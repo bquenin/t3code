@@ -112,20 +112,25 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       };
     }),
   ),
-  t3_thread_search: McpToolAccess.reads((input) =>
-    Effect.gen(function* () {
-      const { caller } = yield* readCaller();
-      const threadSearch = yield* ThreadSearch.ThreadSearch;
-      const { matches } = yield* threadSearch
-        .searchThreads({ ...input, projectId: input.projectId ?? caller?.projectId })
-        .pipe(Effect.mapError(unavailable));
-      return {
-        matches: matches.map((match) => ({
-          ...match,
-          link: formatThreadLink(match.threadId, match.title),
-        })),
-      };
-    }),
+  t3_thread_search: McpToolAccess.forwardsToPeer(
+    ThreadToolkit.tools.t3_thread_search,
+    { access: "reads" },
+    McpToolAccess.reads((input) =>
+      Effect.gen(function* () {
+        const { caller } = yield* readCaller();
+        const { environment: _environment, ...query } = input;
+        const threadSearch = yield* ThreadSearch.ThreadSearch;
+        const { matches } = yield* threadSearch
+          .searchThreads({ ...query, projectId: query.projectId ?? caller?.projectId })
+          .pipe(Effect.mapError(unavailable));
+        return {
+          matches: matches.map((match) => ({
+            ...match,
+            link: formatThreadLink(match.threadId, match.title),
+          })),
+        };
+      }),
+    ),
   ),
   t3_thread_transfer: McpToolAccess.either(
     (input) => input.action === "status",

@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -20,11 +21,33 @@ import * as Settings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
+import * as PeerEnvironments from "../../PeerEnvironments.ts";
 import * as EnvironmentHandlers from "./handlers.ts";
 import { EnvironmentToolkit } from "./tools.ts";
 
 const environmentId = EnvironmentId.make("environment:preferences");
 const threadId = ThreadId.make("thread:preferences");
+const caller: McpInvocationContext.McpInvocationScope = {
+  environmentId,
+  requestNamespace: "provider:preferences",
+  thread: {
+    threadId,
+    providerSessionId: "provider:preferences",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  },
+  client: undefined,
+  capabilities: new Set(["orchestration" as const]),
+  issuedAt: 0,
+};
+const layerEnvironment = Layer.mock(Environment.ServerEnvironment)({
+  getDescriptor: Effect.succeed({
+    environmentId,
+    label: "Test",
+    platform: { os: "linux", arch: "x64" },
+    serverVersion: "0.0.0",
+    capabilities: { repositoryIdentity: false },
+  }),
+});
 
 it.effect("refuses a preferences update when the caller's turn ends while it waits", () =>
   Effect.gen(function* () {
@@ -94,4 +117,46 @@ it.effect("refuses a preferences update when the caller's turn ends while it wai
       ),
     );
   }),
+);
+
+it.effect("lists configured peer environments without their token files", () =>
+  Effect.gen(function* () {
+    const toolkit = yield* EnvironmentToolkit;
+    const result = yield* toolkit
+      .handle("t3_environment_read", {})
+      .pipe(Stream.unwrap, Stream.runCollect);
+    expect(result.at(-1)?.result).toMatchObject({
+      peerEnvironments: [{ label: "build-box", url: "http://127.0.0.1:3790" }],
+    });
+    expect(JSON.stringify(result.at(-1)?.result)).not.toContain("peer-token");
+  }).pipe(
+    Effect.provide(
+      McpToolAccess.HandlersLayer.layer(EnvironmentHandlers.layer).pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            ThreadCommandExecutor.layer,
+            Layer.succeed(McpInvocationContext.McpInvocationContext, caller),
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+            }),
+            layerEnvironment,
+            PeerEnvironments.layer,
+          ).pipe(
+            Layer.provideMerge(
+              Settings.layerTest({
+                peerEnvironments: [
+                  {
+                    label: "build-box",
+                    url: "http://127.0.0.1:3790",
+                    bearerTokenFile: "/tmp/peer-token",
+                  },
+                ],
+              }),
+            ),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      ),
+    ),
+  ),
 );

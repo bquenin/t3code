@@ -28,6 +28,8 @@ import {
   OrchestratorMcpThreadSendResult,
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpThreadWaitResult,
+  PeerEnvironmentSource,
+  PeerEnvironmentTarget,
   ThreadMetadataMcpUpdateInput,
   ThreadMetadataMcpUpdateResult,
   TrimmedNonEmptyString,
@@ -38,6 +40,7 @@ import * as Schema from "effect/Schema";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
+import * as PeerEnvironments from "../../PeerEnvironments.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
 
 const dependencies = [
@@ -45,6 +48,7 @@ const dependencies = [
   ThreadManagementService.ThreadManagementService,
   OrchestratorMcpService.OrchestratorMcpService,
 ];
+const forwardableDependencies = [...dependencies, PeerEnvironments.PeerEnvironments];
 const threadMetadataDependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
@@ -201,12 +205,18 @@ const CreateThreadsTool = Tool.make("create_threads", {
 
 const ThreadListTool = Tool.make("t3_thread_list", {
   description:
-    "List threads in a project, newest first. Omit `projectId` for yours. Filter by status, title, settled, or snoozed. Page with the cursor.",
-  parameters: OrchestratorMcpThreadListInput,
-  success: OrchestratorMcpThreadListResult,
+    "List threads in a project, newest first. Omit `projectId` for yours. Set `environment` to list a peer environment's threads; `projectId` is then required. Filter by status, title, settled, or snoozed. Page with the cursor.",
+  parameters: Schema.Struct({
+    ...OrchestratorMcpThreadListInput.fields,
+    environment: PeerEnvironmentTarget,
+  }),
+  success: Schema.Struct({
+    ...OrchestratorMcpThreadListResult.fields,
+    environment: PeerEnvironmentSource,
+  }),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: forwardableDependencies,
 })
   .annotate(Tool.Title, "List T3 threads")
   .annotate(Tool.Readonly, true)
@@ -215,12 +225,18 @@ const ThreadListTool = Tool.make("t3_thread_list", {
 
 const ThreadReadTool = Tool.make("t3_thread_read", {
   description:
-    "Read any thread by id. `messages` (default): user and assistant messages and plans. `activity`: all timeline items. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `afterPosition=nextPosition`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
-  parameters: OrchestratorMcpThreadReadInput,
-  success: OrchestratorMcpThreadReadResult,
+    "Read any thread by id, here or in a peer environment with `environment` set. `messages` (default): user and assistant messages and plans. `activity`: all timeline items. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `afterPosition=nextPosition`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
+  parameters: Schema.Struct({
+    ...OrchestratorMcpThreadReadInput.fields,
+    environment: PeerEnvironmentTarget,
+  }),
+  success: Schema.Struct({
+    ...OrchestratorMcpThreadReadResult.fields,
+    environment: PeerEnvironmentSource,
+  }),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: forwardableDependencies,
 })
   .annotate(Tool.Title, "Read a T3 thread")
   .annotate(Tool.Strict, true)
@@ -243,12 +259,18 @@ const ThreadUpdateTool = Tool.make("t3_thread_update", {
 
 const ThreadSendTool = Tool.make("t3_thread_send", {
   description:
-    "Send a message to any thread. The target cannot run with broader modes than yours. `mode:'auto'` starts an idle thread, steers a running turn, or queues. `queue`: new turn. `steer`: mid-turn update. `restart`: interrupt and restart. A send to a finished child thread starts a fresh task and returns its `taskId`. In your reply, name it as its `link` verbatim.",
-  parameters: OrchestratorMcpThreadSendInput,
-  success: OrchestratorMcpThreadSendResult,
+    "Send a message to any thread, here or in a peer environment with `environment` set. The target cannot run with broader modes than yours. `mode:'auto'` starts an idle thread, steers a running turn, or queues. `queue`: new turn. `steer`: mid-turn update. `restart`: interrupt and restart. A send to a finished child thread starts a fresh task and returns its `taskId`. In your reply, name it as its `link` verbatim.",
+  parameters: Schema.Struct({
+    ...OrchestratorMcpThreadSendInput.fields,
+    environment: PeerEnvironmentTarget,
+  }),
+  success: Schema.Struct({
+    ...OrchestratorMcpThreadSendResult.fields,
+    environment: PeerEnvironmentSource,
+  }),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: forwardableDependencies,
 })
   .annotate(Tool.Title, "Send to a T3 thread")
   .annotate(Tool.Destructive, true)
@@ -256,12 +278,18 @@ const ThreadSendTool = Tool.make("t3_thread_send", {
 
 const ThreadWaitTool = Tool.make("t3_thread_wait", {
   description:
-    "Wait for a thread's run to finish. No `runId`: latest. Idle: at once. On timeout, with `next` end your turn; without, call again.",
-  parameters: OrchestratorMcpThreadWaitInput,
-  success: OrchestratorMcpThreadWaitResult,
+    "Wait for a thread's run to finish. Pass the `environment` the thread came from. No `runId`: latest. Idle: at once. On timeout, with `next` end your turn; without, call again.",
+  parameters: Schema.Struct({
+    ...OrchestratorMcpThreadWaitInput.fields,
+    environment: PeerEnvironmentTarget,
+  }),
+  success: Schema.Struct({
+    ...OrchestratorMcpThreadWaitResult.fields,
+    environment: PeerEnvironmentSource,
+  }),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: forwardableDependencies,
 })
   .annotate(Tool.Title, "Wait for a T3 thread")
   .annotate(Tool.Readonly, true)
@@ -270,7 +298,7 @@ const ThreadWaitTool = Tool.make("t3_thread_wait", {
 
 const ThreadInterruptTool = Tool.make("t3_thread_interrupt", {
   description:
-    "Interrupt a top-level thread's running turn. No `runId`: newest running turn. No effect when idle. For a delegate, use `task_cancel`.",
+    "Interrupt a top-level thread's running turn. Peer environment threads cannot be interrupted from here. No `runId`: newest running turn. No effect when idle. For a delegate, use `task_cancel`.",
   parameters: OrchestratorMcpThreadInterruptInput,
   success: OrchestratorMcpThreadInterruptResult,
   failure: OrchestratorMcpFailure,

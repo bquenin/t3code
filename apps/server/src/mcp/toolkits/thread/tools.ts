@@ -18,6 +18,8 @@ import {
   RunId,
   NonNegativeInt,
   ProjectId,
+  PeerEnvironmentSource,
+  PeerEnvironmentTarget,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
@@ -27,6 +29,7 @@ import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as PeerEnvironments from "../../PeerEnvironments.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
@@ -185,10 +188,11 @@ const ThreadTransferTool = Tool.make("t3_thread_transfer", {
 const ThreadSearchTool = Tool.make("t3_thread_search", {
   ...commandTool,
   description:
-    "Search active threads by title, branch, PR, project, then message text. Skips subagent threads. `projectId`: one project, else yours, else all outside a thread. Not exhaustive.",
+    "Search active threads by title, branch, PR, project, then message text. Skips subagent threads. `projectId`: one project, else yours, else all outside a thread. Set `environment` to search a peer environment; there, omitting `projectId` searches every project. Not exhaustive.",
   parameters: Schema.Struct({
     ...OrchestrationSearchThreadsInput.fields,
     projectId: Schema.optional(ProjectId),
+    environment: PeerEnvironmentTarget,
   }),
   success: Schema.Struct({
     matches: Schema.Array(
@@ -202,8 +206,13 @@ const ThreadSearchTool = Tool.make("t3_thread_search", {
         messageCreatedAt: Schema.optional(OrchestrationThreadSearchMatch.fields.messageCreatedAt),
       }),
     ),
+    environment: PeerEnvironmentSource,
   }),
-  dependencies: [...commandTool.dependencies, ThreadSearch.ThreadSearch],
+  dependencies: [
+    ...commandTool.dependencies,
+    ThreadSearch.ThreadSearch,
+    PeerEnvironments.PeerEnvironments,
+  ],
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);

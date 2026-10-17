@@ -14,6 +14,8 @@ import {
   ProjectUpdatePayload,
   ProjectId,
   OrchestratorMcpFailure,
+  PeerEnvironmentSource,
+  PeerEnvironmentTarget,
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
 } from "@t3tools/contracts";
@@ -31,6 +33,7 @@ import * as ThreadManagementService from "../../../orchestration-v2/ThreadManage
 import * as SourceControlRepositoryService from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as PeerEnvironments from "../../PeerEnvironments.ts";
 
 const shared = {
   success: Project,
@@ -45,21 +48,26 @@ const shared = {
 };
 const ProjectListTool = Tool.make("t3_project_list", {
   ...shared,
-  description: "List projects. Pages can shift.",
+  description:
+    "List projects, here or in a peer environment with `environment` set. Pages can shift.",
   parameters: Schema.Struct({
     cursor: Schema.optional(NonNegativeInt),
     limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
+    environment: PeerEnvironmentTarget,
   }),
   success: Schema.Struct({
     projects: Schema.Array(Project),
     nextCursor: Schema.NullOr(NonNegativeInt),
+    environment: PeerEnvironmentSource,
   }),
+  dependencies: [...shared.dependencies, PeerEnvironments.PeerEnvironments],
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
 const ProjectReadTool = Tool.make("t3_project_read", {
   ...shared,
-  description: "Read one project: workspace and saved scripts.",
+  description:
+    "Read one project: workspace and saved scripts. Peer environment projects: `t3_project_list` with `environment`.",
   parameters: Schema.Struct({ projectId: ProjectId }),
 })
   .annotate(Tool.Readonly, true)
@@ -101,7 +109,7 @@ const ProjectCloneTool = Tool.make("t3_project_clone", {
 const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ...shared,
   description:
-    "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`. Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. No retry key: after an error or lost reply, check `t3_thread_list` before retrying. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
+    "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`. Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. Set `environment` to launch in a peer environment: pass its `projectId` (or `scratch`) and, unless that project has a default model, a `modelSelection` from there; attachments cannot be forwarded, so put their content in `message`. No retry key: after an error or lost reply, check `t3_thread_list` before retrying. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
   parameters: Schema.Struct({
     projectId: Schema.optional(ProjectId),
     scratch: Schema.optional(
@@ -126,6 +134,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
       }),
     ),
     attachments: Schema.optional(Schema.Array(McpAttachmentInput).check(Schema.isMaxLength(8))),
+    environment: PeerEnvironmentTarget,
   }),
   success: Schema.Struct({
     threadId: ThreadId,
@@ -134,9 +143,11 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     modelSelection: ModelSelection,
     runId: Schema.NullOr(RunId),
     status: Schema.NullOr(OrchestrationV2RunStatus),
+    environment: PeerEnvironmentSource,
   }),
   dependencies: [
     ...shared.dependencies,
+    PeerEnvironments.PeerEnvironments,
     ThreadLaunchService.ThreadLaunchService,
     ManagedProjectFolders.ManagedProjectFolders,
     GitVcsDriver.GitVcsDriver,

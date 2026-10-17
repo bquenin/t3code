@@ -11,6 +11,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -21,6 +22,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as TestConsole from "effect/testing/TestConsole";
 import { Command, CliError } from "effect/cli";
 
+import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { cli } from "../binCli.ts";
 import {
   SERVICE_LAUNCHER_CONTEXT_ENV,
@@ -483,6 +485,67 @@ describe("auth scope options", () => {
       }
       assert.equal(scopeError.option, "scope");
       assert.equal(scopeError.value, "admin");
+    }),
+  );
+});
+
+describe("auth session issue --mcp-client-access", () => {
+  it.effect("issues an MCP client token with the chosen access, label and ttl", () =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cli-mcp-client-test-"));
+      const output = yield* captureStdout(
+        runCli([
+          "auth",
+          "session",
+          "issue",
+          "--base-dir",
+          baseDir,
+          "--json",
+          "--mcp-client-access",
+          "full-access",
+          "--label",
+          "hub",
+          "--ttl",
+          "8760h",
+        ]),
+      );
+      const issued = JSON.parse(output) as {
+        readonly scopes: ReadonlyArray<string>;
+        readonly subject: string;
+        readonly client: { readonly label?: string };
+        readonly expiresAt: string;
+      };
+
+      assert.deepEqual(issued.scopes, [...EnvironmentAuth.mcpClientScopes("full-access")]);
+      assert.equal(issued.subject, "mcp-client");
+      assert.equal(issued.client.label, "hub");
+      const now = yield* Clock.currentTimeMillis;
+      assert.isAbove(Date.parse(issued.expiresAt) - now, 364 * 24 * 60 * 60 * 1000);
+    }),
+  );
+
+  it.effect.each([
+    { flag: "--scope", value: "orchestration:read" },
+    { flag: "--subject", value: "someone" },
+  ])("refuses --mcp-client-access with $flag", ({ flag, value }) =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cli-mcp-client-test-"));
+      const error = yield* runCli([
+        "auth",
+        "session",
+        "issue",
+        "--base-dir",
+        baseDir,
+        "--mcp-client-access",
+        "read-only",
+        flag,
+        value,
+      ]).pipe(provideCliTestLayers, Effect.flip);
+
+      if (!CliError.isCliError(error) || error._tag !== "UserError") {
+        assert.fail(`Expected UserError, got ${String(error)}`);
+      }
+      assert.include(error.userMessage, "--mcp-client-access");
     }),
   );
 });
