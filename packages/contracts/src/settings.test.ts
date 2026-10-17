@@ -1097,6 +1097,20 @@ describe("peer environments", () => {
       decodeServerSettingsPatch({ peerEnvironments: [{ ...peer, url: "ftp://box" }] }),
     ).toThrow();
   });
+
+  it("accepts only an http(s) origin as the peer url", () => {
+    const decodeUrl = (url: string) =>
+      decodeServerSettings({ peerEnvironments: [{ ...peer, url }] }).peerEnvironments.map(
+        (entry) => entry.url,
+      );
+    for (const url of ["http://127.0.0.1:3790", "https://peer.example"]) {
+      expect(decodeUrl(url)).toEqual([url]);
+    }
+    for (const url of ["http://[", "http://host:abc", "http://host/base", "http://host/?a=1"]) {
+      expect(decodeUrl(url)).toEqual([]);
+      expect(() => decodeServerSettingsPatch({ peerEnvironments: [{ ...peer, url }] })).toThrow();
+    }
+  });
 });
 
 describe("branch naming settings", () => {

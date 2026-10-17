@@ -121,7 +121,8 @@ Peers need no setup beyond a token.
    ```
 
    `label` is a short lowercase name (letters, digits and `-`). `url` is the
-   peer's address without `/mcp`. Changes apply without a restart.
+   peer's `http://` or `https://` address with no path; the hub adds `/mcp`.
+   Changes apply without a restart.
 
 Agents on the hub see the peers in `t3_environment_read` and pass a label as
 `environment` to `t3_project_list`, `t3_thread_list`, `t3_thread_search`,
@@ -137,6 +138,8 @@ Agents on the hub see the peers in `t3_environment_read` and pass a label as
   `environment`; pass the same `environment` with any thread or project id
   from them. Listing threads or launching on a peer needs a `projectId` from
   that peer's `t3_project_list`, or `scratch: true` for a launch.
+- Attachments stay in the environment they were uploaded to, so a launch on a
+  peer refuses them. Put their content in the message instead.
 - To cut a hub off, revoke its session on the peer in **Settings →
   Connections** or with `t3 auth session revoke`.
 

@@ -98,7 +98,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   ),
   t3_thread_search: McpToolAccess.forwardsToPeer(
     ThreadToolkit.tools.t3_thread_search,
-    "reads",
+    { access: "reads" },
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         const { caller } = yield* readCaller();

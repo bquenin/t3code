@@ -53,7 +53,7 @@ const access = Effect.gen(function* () {
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_thread_launch: McpToolAccess.forwardsToPeer(
     ProjectToolkit.tools.t3_thread_launch,
-    "starts",
+    { access: "starts" },
     McpToolAccess.startsThreads(
       (input) => input,
       (input, { runtimeMode, interactionMode }) =>
@@ -191,7 +191,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_list: McpToolAccess.forwardsToPeer(
     ProjectToolkit.tools.t3_project_list,
-    "reads",
+    { access: "reads" },
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         const projects = yield* access;

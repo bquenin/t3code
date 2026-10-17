@@ -516,12 +516,16 @@ it.effect("a launch into a new worktree creates nothing when its base ref has no
 it.effect("launches in a peer environment with the modes clamped to the caller's ceiling", () =>
   Effect.gen(function* () {
     const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
-    const forwarded: Array<{ readonly label: string; readonly args: unknown }> = [];
+    const forwarded: Array<{
+      readonly label: string;
+      readonly args: unknown;
+      readonly retryUncertain: boolean;
+    }> = [];
     const { dependencies } = clientLaunchHarness({
       runtimeModeCeiling: "auto-accept-edits",
       launched,
-      callPeerTool: (label, _toolName, args) => {
-        forwarded.push({ label, args });
+      callPeerTool: (label, _toolName, args, { retryUncertain }) => {
+        forwarded.push({ label, args, retryUncertain });
         return Effect.succeed({
           threadId: "thread:on-peer",
           projectId: "project:on-peer",
@@ -559,6 +563,7 @@ it.effect("launches in a peer environment with the modes clamped to the caller's
           runtimeMode: "auto-accept-edits",
           interactionMode: "default",
         },
+        retryUncertain: false,
       },
     ]);
 
@@ -566,6 +571,45 @@ it.effect("launches in a peer environment with the modes clamped to the caller's
       code: "runtime_mode_escalation_denied",
     });
     expect(forwarded).toHaveLength(1);
+    expect(launched).toHaveLength(0);
+  }),
+);
+
+it.effect("refuses to forward attachments to a peer launch", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const forwarded: Array<string> = [];
+    const { dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      launched,
+      callPeerTool: (_label, toolName) => {
+        forwarded.push(toolName);
+        return Effect.die("a launch with attachments must not reach the peer");
+      },
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const result = yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Fix",
+        projectId: ProjectId.make("project:on-peer"),
+        environment: "box",
+        message: "Read the notes",
+        attachments: [
+          { type: "file", id: "upload-1", name: "notes.txt", mimeType: "text/plain", sizeBytes: 5 },
+        ],
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+
+    expect(result.at(-1)?.result).toMatchObject({
+      code: "invalid_request",
+      message:
+        "Attachments cannot be forwarded to a peer environment; upload them there or put the content in message.",
+    });
+    expect(forwarded).toEqual([]);
     expect(launched).toHaveLength(0);
   }),
 );

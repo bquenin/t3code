@@ -106,7 +106,7 @@ const handlers = {
   ),
   t3_thread_list: McpToolAccess.forwardsToPeer(
     t3_thread_list,
-    "reads",
+    { access: "reads" },
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;
@@ -117,7 +117,7 @@ const handlers = {
   ),
   t3_thread_read: McpToolAccess.forwardsToPeer(
     t3_thread_read,
-    "reads",
+    { access: "reads" },
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;
@@ -137,7 +137,7 @@ const handlers = {
   ),
   t3_thread_send: McpToolAccess.forwardsToPeer(
     t3_thread_send,
-    "writes",
+    { access: "writes", targetThreadId: (input) => input.threadId },
     McpToolAccess.writesThreads(
       (input) => [input.threadId],
       (input) =>
@@ -150,7 +150,7 @@ const handlers = {
   ),
   t3_thread_wait: McpToolAccess.forwardsToPeer(
     t3_thread_wait,
-    "reads",
+    { access: "reads" },
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;

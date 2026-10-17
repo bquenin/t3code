@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   OrchestratorMcpFailure,
   ProviderInstanceId,
+  type RuntimeMode,
   type ServerSettingsError,
   ThreadId,
 } from "@t3tools/contracts";
@@ -40,11 +41,17 @@ const readOnlyClient: McpInvocationContext.McpInvocationScope = {
   thread: undefined,
   client: { sessionId: "session:reader", label: "Reader", access: "read-only" },
 };
+const approvalRequiredClient: McpInvocationContext.McpInvocationScope = {
+  ...threadCaller,
+  thread: undefined,
+  client: { sessionId: "session:supervised", label: "Supervised", access: "approval-required" },
+};
 
 interface Forwarded {
   readonly label: string;
   readonly toolName: string;
   readonly args: unknown;
+  readonly retryUncertain: boolean;
 }
 
 const peerSendResult = {
@@ -54,6 +61,14 @@ const peerSendResult = {
   status: "running",
   delivery: "started",
 };
+
+// The send's target check reads only the thread's modes from this.
+const peerThread = (runtimeMode: RuntimeMode) => ({
+  thread: { runtimeMode, interactionMode: "default" },
+});
+
+const peerResponse = (toolName: string) =>
+  Effect.succeed(toolName === "t3_thread_read" ? peerThread("full-access") : peerSendResult);
 
 const callTool = (
   scope: McpInvocationContext.McpInvocationScope,
@@ -78,20 +93,22 @@ const callTool = (
       .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(layerDependencies));
     return results.at(-1)?.result;
   }).pipe(
-    Effect.provide(McpToolAccess.HandlersLayer.layer(OrchestratorHandlers.layer)),
-    Effect.provide(layerDependencies),
+    Effect.provide(
+      McpToolAccess.HandlersLayer.layer(OrchestratorHandlers.layer).pipe(
+        Layer.provideMerge(layerDependencies),
+      ),
+    ),
   );
 };
 
 const recordingPeers = (
   forwarded: Array<Forwarded>,
-  respond: () => Effect.Effect<unknown, OrchestratorMcpFailure> = () =>
-    Effect.succeed(peerSendResult),
+  respond: (toolName: string) => Effect.Effect<unknown, OrchestratorMcpFailure> = peerResponse,
 ) =>
   Layer.mock(PeerEnvironments.PeerEnvironments)({
-    callTool: (label, toolName, args) => {
-      forwarded.push({ label, toolName, args });
-      return respond();
+    callTool: (label, toolName, args, { retryUncertain }) => {
+      forwarded.push({ label, toolName, args, retryUncertain });
+      return respond(toolName);
     },
   });
 
@@ -107,8 +124,15 @@ it.effect("forwards a send to the peer without environment and tags the result w
     expect(forwarded).toEqual([
       {
         label: "box",
+        toolName: "t3_thread_read",
+        args: { threadId: "thread:on-peer", limit: 1, maxCharsPerItem: 1 },
+        retryUncertain: true,
+      },
+      {
+        label: "box",
         toolName: "t3_thread_send",
         args: { threadId: "thread:on-peer", message: "Run the tests" },
+        retryUncertain: false,
       },
     ]);
     expect(result).toEqual({ ...peerSendResult, environment: "box" });
@@ -143,6 +167,47 @@ it.effect("lets a read-only client forward reads but not sends", () =>
   }),
 );
 
+it.effect("refuses a send to a peer thread with broader modes than the caller", () =>
+  Effect.gen(function* () {
+    const forwarded: Array<Forwarded> = [];
+    const send = (respond: (toolName: string) => Effect.Effect<unknown, OrchestratorMcpFailure>) =>
+      callTool(approvalRequiredClient, recordingPeers(forwarded, respond), "t3_thread_send", {
+        threadId: "thread:on-peer",
+        message: "Run the tests",
+        environment: "box",
+      });
+    const targetIn = (runtimeMode: RuntimeMode) => (toolName: string) =>
+      Effect.succeed(toolName === "t3_thread_read" ? peerThread(runtimeMode) : peerSendResult);
+    const sentTools = () => forwarded.map((call) => call.toolName);
+
+    expect(yield* send(targetIn("full-access"))).toMatchObject({
+      code: "runtime_mode_escalation_denied",
+    });
+    expect(sentTools()).toEqual(["t3_thread_read"]);
+
+    const missing = new OrchestratorMcpFailure({
+      code: "thread_not_found",
+      message: "[box] The thread was not found.",
+    });
+    expect(yield* send(() => Effect.fail(missing))).toMatchObject({
+      code: "thread_not_found",
+      message: missing.message,
+    });
+    expect(sentTools()).toEqual(["t3_thread_read", "t3_thread_read"]);
+
+    expect(yield* send(targetIn("approval-required"))).toEqual({
+      ...peerSendResult,
+      environment: "box",
+    });
+    expect(sentTools()).toEqual([
+      "t3_thread_read",
+      "t3_thread_read",
+      "t3_thread_read",
+      "t3_thread_send",
+    ]);
+  }),
+);
+
 it.effect("returns the peer's failure as the tool failure", () =>
   Effect.gen(function* () {
     const failure = new OrchestratorMcpFailure({
@@ -164,7 +229,11 @@ it.effect("refuses a peer result that does not match the tool's output", () =>
   Effect.gen(function* () {
     const result = yield* callTool(
       threadCaller,
-      recordingPeers([], () => Effect.succeed({ unexpected: true })),
+      recordingPeers([], (toolName) =>
+        toolName === "t3_thread_send"
+          ? Effect.succeed({ unexpected: true })
+          : peerResponse(toolName),
+      ),
       "t3_thread_send",
       { threadId: "thread:on-peer", message: "Run the tests", environment: "box" },
     );

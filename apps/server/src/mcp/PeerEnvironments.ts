@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerSettings from "../serverSettings.ts";
@@ -29,11 +30,15 @@ export class PeerEnvironments extends Context.Service<
       ReadonlyArray<PeerEnvironmentSummary>,
       OrchestratorMcpFailure
     >;
-    /** Resolves to the peer tool's result object. */
+    /**
+     * Resolves to the peer tool's result object. `retryUncertain` also retries
+     * a call whose connection failed after it was sent, which may run it twice.
+     */
     readonly callTool: (
       label: string,
       toolName: string,
       args: Readonly<Record<string, unknown>>,
+      options: { readonly retryUncertain: boolean },
     ) => Effect.Effect<unknown, OrchestratorMcpFailure>;
   }
 >()("t3/mcp/PeerEnvironments") {}
@@ -128,6 +133,9 @@ const loadSdk = () =>
 
 const closeClient = (client: Client) => Effect.promise(() => client.close().catch(() => undefined));
 
+const isCurrent = (connection: Connection, peer: PeerEnvironmentConfig) =>
+  connection.url === peer.url && connection.bearerTokenFile === peer.bearerTokenFile;
+
 const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -138,7 +146,19 @@ const make = Effect.gen(function* () {
     }),
   );
   const connections = new Map<string, Connection>();
-  const connecting = yield* Semaphore.make(1);
+  // One lock per peer, so a slow connect to one peer does not hold up another.
+  const locks = new Map<string, Semaphore.Semaphore>();
+  const withPeerLock =
+    (label: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Effect.suspend(() => {
+        let lock = locks.get(label);
+        if (lock === undefined) {
+          lock = Semaphore.makeUnsafe(1);
+          locks.set(label, lock);
+        }
+        return lock.withPermits(1)(effect);
+      });
   yield* Effect.addFinalizer(() =>
     Effect.forEach([...connections.values()], (connection) => closeClient(connection.client), {
       discard: true,
@@ -192,29 +212,25 @@ const make = Effect.gen(function* () {
       );
       const { Client, StreamableHTTPClientTransport } = yield* sdk;
       const client = new Client({ name: "t3-code-peer", version: packageJson.version });
-      const transport = new StreamableHTTPClientTransport(new URL("/mcp", peer.url), {
-        requestInit: { headers: { Authorization: `Bearer ${token}` } },
-      });
       yield* Effect.tryPromise({
-        // The SDK declares its own transport's sessionId without
-        // exactOptionalPropertyTypes in mind.
-        try: () => client.connect(transport as Transport),
+        try: () => {
+          const transport = new StreamableHTTPClientTransport(new URL("/mcp", peer.url), {
+            requestInit: { headers: { Authorization: `Bearer ${token}` } },
+          });
+          // The SDK declares its own transport's sessionId without
+          // exactOptionalPropertyTypes in mind.
+          return client.connect(transport as Transport);
+        },
         catch: (cause) => new PeerTransportError({ label: peer.label, stage: "connect", cause }),
       }).pipe(Effect.onError(() => closeClient(client)));
       return { url: peer.url, bearerTokenFile: peer.bearerTokenFile, client } satisfies Connection;
     });
 
   const acquire = (peer: PeerEnvironmentConfig) =>
-    connecting.withPermits(1)(
+    withPeerLock(peer.label)(
       Effect.gen(function* () {
         const existing = connections.get(peer.label);
-        if (
-          existing !== undefined &&
-          existing.url === peer.url &&
-          existing.bearerTokenFile === peer.bearerTokenFile
-        ) {
-          return existing;
-        }
+        if (existing !== undefined && isCurrent(existing, peer)) return existing;
         connections.delete(peer.label);
         if (existing !== undefined) yield* closeClient(existing.client);
         const connection = yield* connect(peer);
@@ -223,14 +239,28 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const reset = (label: string, connection: Connection) =>
-    connecting.withPermits(1)(
+  const drop = (label: string, stale: (connection: Connection) => boolean) =>
+    withPeerLock(label)(
       Effect.suspend(() => {
-        if (connections.get(label) !== connection) return Effect.void;
+        const connection = connections.get(label);
+        if (connection === undefined || !stale(connection)) return Effect.void;
         connections.delete(label);
         return closeClient(connection.client);
       }),
     );
+
+  const changes = yield* settings.subscribeChanges;
+  yield* Stream.runForEach(changes, ({ peerEnvironments }) =>
+    Effect.forEach(
+      [...locks.keys()],
+      (label) =>
+        drop(label, (connection) => {
+          const peer = peerEnvironments.find((candidate) => candidate.label === label);
+          return peer === undefined || !isCurrent(connection, peer);
+        }),
+      { concurrency: "unbounded", discard: true },
+    ),
+  ).pipe(Effect.forkScoped);
 
   const attempt = (
     peer: PeerEnvironmentConfig,
@@ -252,18 +282,32 @@ const make = Effect.gen(function* () {
         catch: (cause) => new PeerTransportError({ label: peer.label, stage: "call", cause }),
       }).pipe(
         Effect.tapError((error) =>
-          isProtocolError(error) ? Effect.void : reset(peer.label, connection),
+          isProtocolError(error)
+            ? Effect.void
+            : drop(peer.label, (current) => current === connection),
         ),
       );
     });
 
-  const callTool: PeerEnvironments["Service"]["callTool"] = (label, toolName, args) =>
+  const callTool: PeerEnvironments["Service"]["callTool"] = (
+    label,
+    toolName,
+    args,
+    { retryUncertain },
+  ) =>
     Effect.gen(function* () {
       const peer = yield* resolvePeer(label);
       const { McpError, ErrorCode, StreamableHTTPError } = yield* sdk;
       const timeout = forwardTimeout(toolName, args);
       const isProtocolError = (error: PeerTransportError) =>
         error.cause instanceof McpError && error.cause.code !== ErrorCode.ConnectionClosed;
+      // Nothing ran on the peer before the connect finished, or when it
+      // answered 404 for a session it no longer knows.
+      const isRetryable = (error: PeerTransportError) =>
+        !isProtocolError(error) &&
+        (error.stage === "connect" ||
+          retryUncertain ||
+          (error.cause instanceof StreamableHTTPError && error.cause.code === 404));
       const toFailure = (error: PeerTransportError) => {
         const { cause } = error;
         if (cause instanceof McpError && isProtocolError(error)) {
@@ -275,9 +319,13 @@ const make = Effect.gen(function* () {
             message: `[${label}] ${cause.message.replace(/^MCP error -?\d+: /, "")}`,
           });
         }
+        if (cause instanceof StreamableHTTPError && (cause.code === 401 || cause.code === 403))
+          return peerUnavailable(
+            `Peer environment ${label} rejected the bearer token. Mint a new one on the peer with t3 auth session issue --mcp-client-access.`,
+          );
         return peerUnavailable(
-          cause instanceof StreamableHTTPError && (cause.code === 401 || cause.code === 403)
-            ? `Peer environment ${label} rejected the bearer token. Mint a new one on the peer with t3 auth session issue --mcp-client-access.`
+          error.stage === "call" && !retryUncertain
+            ? `The connection to peer environment ${label} failed after the request was sent, so the peer may have received it. Check with t3_thread_list or t3_thread_read before retrying.`
             : `Peer environment ${label} is unreachable. Check that its server is running and reachable from this environment.`,
         );
       };
@@ -286,9 +334,9 @@ const make = Effect.gen(function* () {
           // A restarted peer forgets the session, and a dropped connection may
           // recover; a fresh client covers both.
           PeerTransportError: (error) =>
-            isProtocolError(error)
-              ? Effect.fail(error)
-              : attempt(peer, toolName, args, timeout, isProtocolError),
+            isRetryable(error)
+              ? attempt(peer, toolName, args, timeout, isProtocolError)
+              : Effect.fail(error),
         }),
         Effect.catchTags({ PeerTransportError: (error) => Effect.fail(toFailure(error)) }),
         Effect.timeoutOrElse({

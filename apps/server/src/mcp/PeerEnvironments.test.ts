@@ -20,7 +20,10 @@ import { CallToolRequestSchema, isInitializeRequest } from "@modelcontextprotoco
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
+import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { Tool, Toolkit } from "effect/ai";
 import { HttpRouter, HttpServer } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
@@ -36,9 +39,19 @@ interface FakePeer {
   readonly url: string;
   readonly authorizations: Array<string | undefined>;
   readonly initializations: () => number;
+  /** Calls to `drop`, whose connection the peer cuts after reading the request. */
+  readonly drops: () => number;
   readonly hangEntered: Promise<void>;
+  /** The client's event stream, which it closes with the client. */
+  readonly eventStreamOpened: Promise<void>;
+  readonly eventStreamClosed: Promise<void>;
   readonly restart: Effect.Effect<void>;
+  /** Forgets the sessions but keeps serving, so a known client gets a 404. */
+  readonly forgetSessions: Effect.Effect<void>;
 }
+
+const reads = { retryUncertain: true };
+const writes = { retryUncertain: false };
 
 const readBody = (request: NodeHttp.IncomingMessage) =>
   new Promise<unknown>((resolve) => {
@@ -86,11 +99,30 @@ const makePeerServer = () => {
 const withFakePeer = <A, E, R>(run: (peer: FakePeer) => Effect.Effect<A, E, R>) => {
   const authorizations: Array<string | undefined> = [];
   let initializations = 0;
+  let drops = 0;
+  let openEventStream = () => {};
+  let closeEventStream = () => {};
+  const eventStreamOpened = new Promise<void>((resolve) => (openEventStream = resolve));
+  const eventStreamClosed = new Promise<void>((resolve) => (closeEventStream = resolve));
   let sessions = new Map<string, StreamableHTTPServerTransport>();
   let hangEntered: Promise<void> = Promise.resolve();
   const handler: NodeHttp.RequestListener = async (request, response) => {
     authorizations.push(request.headers.authorization);
     const body = request.method === "POST" ? await readBody(request) : undefined;
+    if (
+      Predicate.isObject(body) &&
+      body.method === "tools/call" &&
+      Predicate.isObject(body.params) &&
+      body.params.name === "drop"
+    ) {
+      drops += 1;
+      request.socket.destroy();
+      return;
+    }
+    if (request.method === "GET") {
+      openEventStream();
+      response.on("close", closeEventStream);
+    }
     const sessionId = request.headers["mcp-session-id"];
     let transport = typeof sessionId === "string" ? sessions.get(sessionId) : undefined;
     if (transport === undefined) {
@@ -133,9 +165,15 @@ const withFakePeer = <A, E, R>(run: (peer: FakePeer) => Effect.Effect<A, E, R>) 
         url: `http://127.0.0.1:${state.port}`,
         authorizations,
         initializations: () => initializations,
+        drops: () => drops,
+        eventStreamOpened,
+        eventStreamClosed,
         get hangEntered() {
           return hangEntered;
         },
+        forgetSessions: Effect.sync(() => {
+          sessions = new Map();
+        }),
         restart: Effect.gen(function* () {
           yield* close(state.current);
           sessions = new Map();
@@ -159,12 +197,53 @@ const layerPeers = (peerEnvironments: ReadonlyArray<PeerEnvironmentConfig>) =>
     Layer.provide(NodeServices.layer),
   );
 
+// The test settings service publishes no changes; this one publishes its updates.
+const layerPublishingSettings = (peerEnvironments: ReadonlyArray<PeerEnvironmentConfig>) =>
+  Layer.effect(
+    ServerSettings.ServerSettingsService,
+    Effect.gen(function* () {
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const changes = yield* PubSub.unbounded<Effect.Success<typeof settings.getSettings>>();
+      return ServerSettings.ServerSettingsService.of({
+        ...settings,
+        updateSettings: (patch) =>
+          settings.updateSettings(patch).pipe(Effect.tap((next) => PubSub.publish(changes, next))),
+        streamChanges: Stream.fromPubSub(changes),
+        subscribeChanges: PubSub.subscribe(changes).pipe(Effect.map(Stream.fromSubscription)),
+      });
+    }),
+  ).pipe(Layer.provide(ServerSettings.layerTest({ peerEnvironments: [...peerEnvironments] })));
+
+// Accepts connections and never answers.
+const withSilentPeer = <A, E, R>(
+  run: (peer: { url: string; reached: Promise<void> }) => Effect.Effect<A, E, R>,
+) => {
+  let reach = () => {};
+  const reached = new Promise<void>((resolve) => (reach = resolve));
+  return Effect.acquireUseRelease(
+    Effect.callback<NodeHttp.Server>((resume) => {
+      const server = NodeHttp.createServer(() => reach());
+      server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
+    }),
+    (server) => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      return run({ url: `http://127.0.0.1:${port}`, reached });
+    },
+    (server) =>
+      Effect.callback<void>((resume) => {
+        server.closeAllConnections();
+        server.close(() => resume(Effect.void));
+      }),
+  );
+};
+
 it.effect("forwards a tool call with the stored bearer token and returns its result", () =>
   withFakePeer((peer) =>
     Effect.gen(function* () {
       const peers = yield* PeerEnvironments.PeerEnvironments;
-      const result = yield* peers.callTool("box", "echo", { value: "hi" });
-      const fallback = yield* peers.callTool("box", "text_only", { value: "text" });
+      const result = yield* peers.callTool("box", "echo", { value: "hi" }, reads);
+      const fallback = yield* peers.callTool("box", "text_only", { value: "text" }, reads);
 
       expect(result).toEqual({ echoed: { value: "hi" } });
       expect(fallback).toEqual({ echoed: { value: "text" } });
@@ -182,9 +261,9 @@ it.effect("reconnects once when the peer restarted and forgot the session", () =
   withFakePeer((peer) =>
     Effect.gen(function* () {
       const peers = yield* PeerEnvironments.PeerEnvironments;
-      yield* peers.callTool("box", "echo", { call: 1 });
+      yield* peers.callTool("box", "echo", { call: 1 }, reads);
       yield* peer.restart;
-      const result = yield* peers.callTool("box", "echo", { call: 2 });
+      const result = yield* peers.callTool("box", "echo", { call: 2 }, reads);
 
       expect(result).toEqual({ echoed: { call: 2 } });
       expect(peer.initializations()).toBe(2);
@@ -196,12 +275,111 @@ it.effect("reconnects once when the peer restarted and forgot the session", () =
   ),
 );
 
+it.effect("does not resend a write whose connection failed after it was sent", () =>
+  withFakePeer((peer) =>
+    Effect.gen(function* () {
+      const peers = yield* PeerEnvironments.PeerEnvironments;
+      const write = yield* peers
+        .callTool("box", "drop", {}, writes)
+        .pipe(Effect.asVoid, Effect.flip);
+
+      expect(peer.drops()).toBe(1);
+      expect(write.code).toBe("peer_unavailable");
+      expect(write.message).toContain("may have received it");
+      expect(write.message).toContain("t3_thread_list or t3_thread_read");
+
+      const read = yield* peers.callTool("box", "drop", {}, reads).pipe(Effect.asVoid, Effect.flip);
+
+      expect(peer.drops()).toBe(3);
+      expect(read.message).toContain("unreachable");
+    }).pipe(
+      Effect.provide(
+        layerPeers([{ label: "box", url: peer.url, bearerTokenFile: tokenFile("token") }]),
+      ),
+    ),
+  ),
+);
+
+it.effect("resends a write the peer refused for a session it forgot", () =>
+  withFakePeer((peer) =>
+    Effect.gen(function* () {
+      const peers = yield* PeerEnvironments.PeerEnvironments;
+      yield* peers.callTool("box", "echo", { call: 1 }, writes);
+      yield* peer.forgetSessions;
+
+      expect(yield* peers.callTool("box", "echo", { call: 2 }, writes)).toEqual({
+        echoed: { call: 2 },
+      });
+      expect(peer.initializations()).toBe(2);
+    }).pipe(
+      Effect.provide(
+        layerPeers([{ label: "box", url: peer.url, bearerTokenFile: tokenFile("token") }]),
+      ),
+    ),
+  ),
+);
+
+it.effect("a peer that hangs while connecting does not hold up another peer", () =>
+  withFakePeer((peer) =>
+    withSilentPeer((silent) =>
+      Effect.gen(function* () {
+        const peers = yield* PeerEnvironments.PeerEnvironments;
+        const stuck = yield* peers.callTool("stuck", "echo", {}, reads).pipe(Effect.forkChild);
+        yield* Effect.promise(() => silent.reached);
+
+        expect(yield* peers.callTool("box", "echo", { value: 1 }, reads)).toEqual({
+          echoed: { value: 1 },
+        });
+        yield* Fiber.interrupt(stuck);
+      }).pipe(
+        Effect.provide(
+          layerPeers([
+            { label: "stuck", url: silent.url, bearerTokenFile: tokenFile("token") },
+            { label: "box", url: peer.url, bearerTokenFile: tokenFile("token") },
+          ]),
+        ),
+      ),
+    ),
+  ),
+);
+
+it.effect("closes the connection to a peer removed from settings", () =>
+  withFakePeer((peer) =>
+    Effect.gen(function* () {
+      const peers = yield* PeerEnvironments.PeerEnvironments;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* peers.callTool("box", "echo", {}, reads);
+      yield* Effect.promise(() => peer.eventStreamOpened);
+
+      yield* settings.updateSettings({ peerEnvironments: [] });
+      yield* Effect.promise(() => peer.eventStreamClosed);
+
+      const removed = yield* peers
+        .callTool("box", "echo", {}, reads)
+        .pipe(Effect.asVoid, Effect.flip);
+      expect(removed.code).toBe("peer_unavailable");
+      expect(removed.message).toContain("Unknown peer environment box");
+    }).pipe(
+      Effect.provide(
+        PeerEnvironments.layer.pipe(
+          Layer.provideMerge(
+            layerPublishingSettings([
+              { label: "box", url: peer.url, bearerTokenFile: tokenFile("token") },
+            ]),
+          ),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    ),
+  ),
+);
+
 it.effect("gives up on a peer that does not answer within the call timeout", () =>
   withFakePeer((peer) =>
     Effect.gen(function* () {
       const peers = yield* PeerEnvironments.PeerEnvironments;
       const call = yield* peers
-        .callTool("box", "hang", {})
+        .callTool("box", "hang", {}, reads)
         .pipe(Effect.asVoid, Effect.flip, Effect.forkChild);
       yield* Effect.promise(() => peer.hangEntered);
       yield* TestClock.adjust("21 seconds");
@@ -221,8 +399,12 @@ it.effect("passes a peer tool failure through with the peer's label", () =>
   withFakePeer((peer) =>
     Effect.gen(function* () {
       const peers = yield* PeerEnvironments.PeerEnvironments;
-      const plain = yield* peers.callTool("box", "fail_plain", {}).pipe(Effect.asVoid, Effect.flip);
-      const coded = yield* peers.callTool("box", "fail_coded", {}).pipe(Effect.asVoid, Effect.flip);
+      const plain = yield* peers
+        .callTool("box", "fail_plain", {}, reads)
+        .pipe(Effect.asVoid, Effect.flip);
+      const coded = yield* peers
+        .callTool("box", "fail_coded", {}, reads)
+        .pipe(Effect.asVoid, Effect.flip);
 
       expect({ code: plain.code, message: plain.message }).toEqual({
         code: "orchestration_error",
@@ -243,11 +425,15 @@ it.effect("passes a peer tool failure through with the peer's label", () =>
 it.effect("reports unknown, unreadable and unreachable peers as unavailable", () =>
   Effect.gen(function* () {
     const peers = yield* PeerEnvironments.PeerEnvironments;
-    const unknown = yield* peers.callTool("other", "echo", {}).pipe(Effect.asVoid, Effect.flip);
-    const unreadable = yield* peers
-      .callTool("missing-token", "echo", {})
+    const unknown = yield* peers
+      .callTool("other", "echo", {}, reads)
       .pipe(Effect.asVoid, Effect.flip);
-    const unreachable = yield* peers.callTool("down", "echo", {}).pipe(Effect.asVoid, Effect.flip);
+    const unreadable = yield* peers
+      .callTool("missing-token", "echo", {}, reads)
+      .pipe(Effect.asVoid, Effect.flip);
+    const unreachable = yield* peers
+      .callTool("down", "echo", {}, reads)
+      .pipe(Effect.asVoid, Effect.flip);
 
     expect([unknown.code, unreadable.code, unreachable.code]).toEqual([
       "peer_unavailable",
@@ -283,7 +469,7 @@ it.effect("picks up peers added to settings without a restart", () =>
       });
 
       expect(yield* peers.list()).toEqual([{ label: "box", url: peer.url }]);
-      expect(yield* peers.callTool("box", "echo", { value: 1 })).toEqual({
+      expect(yield* peers.callTool("box", "echo", { value: 1 }, reads)).toEqual({
         echoed: { value: 1 },
       });
     }).pipe(Effect.provide(layerPeers([]))),
@@ -352,8 +538,10 @@ it.effect("works against a T3 server's own MCP endpoint", () =>
       const result = yield* Effect.gen(function* () {
         const peers = yield* PeerEnvironments.PeerEnvironments;
         return {
-          probe: yield* peers.callTool("peer", "probe", { value: "hi" }),
-          refused: yield* peers.callTool("peer", "refuse", {}).pipe(Effect.asVoid, Effect.flip),
+          probe: yield* peers.callTool("peer", "probe", { value: "hi" }, reads),
+          refused: yield* peers
+            .callTool("peer", "refuse", {}, reads)
+            .pipe(Effect.asVoid, Effect.flip),
         };
       }).pipe(
         Effect.provide(

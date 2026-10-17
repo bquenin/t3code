@@ -8,10 +8,31 @@ export const PeerEnvironmentLabel = Schema.String.check(
 );
 export type PeerEnvironmentLabel = typeof PeerEnvironmentLabel.Type;
 
+const isPeerOrigin = (url: string) => {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return (
+    (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+    parsed.pathname === "/" &&
+    parsed.search === "" &&
+    parsed.hash === ""
+  );
+};
+
 export const PeerEnvironmentConfig = Schema.Struct({
   label: PeerEnvironmentLabel,
   /** The hub calls the peer's MCP endpoint at `${url}/mcp`. */
-  url: TrimmedNonEmptyString.check(Schema.isPattern(/^https?:\/\/[^\s/]+\/?$/)),
+  url: TrimmedNonEmptyString.check(
+    Schema.makeFilter(
+      (url) =>
+        isPeerOrigin(url) ||
+        "Use the peer's http(s) address with no path, query or fragment, such as http://127.0.0.1:3790.",
+    ),
+  ),
   bearerTokenFile: TrimmedNonEmptyString.check(Schema.isPattern(/^(\/|[A-Za-z]:[\\/])/)),
 });
 export type PeerEnvironmentConfig = typeof PeerEnvironmentConfig.Type;
