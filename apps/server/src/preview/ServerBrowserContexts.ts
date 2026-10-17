@@ -90,6 +90,11 @@ export class ServerBrowserContexts {
         "--disable-gpu",
         "--force-device-scale-factor=2",
         "--disable-blink-features=AutomationControlled",
+        // Headless Chrome has no prompt for the Local Network Access permission, so
+        // it silently blocks a public page's requests to loopback. Sign-in flows rely
+        // on that path (Beyond Identity probes its local authenticator), as the
+        // Electron webview used to allow. Playwright merges this into its own list.
+        "--disable-features=LocalNetworkAccessChecks",
       ],
       ignoreDefaultArgs: ["--enable-automation"],
       headless: true,
