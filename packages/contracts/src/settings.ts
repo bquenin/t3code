@@ -1,8 +1,10 @@
 import { SshDeviceHostConfigs } from "./device.ts";
+import { PeerEnvironmentConfig, PeerEnvironmentConfigs } from "./peerEnvironment.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
   AuthProvidersManageScope,
+  AuthTerminalOperateScope,
   type AuthEnvironmentScope,
 } from "./auth.ts";
 import * as Effect from "effect/Effect";
@@ -10,6 +12,7 @@ import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
+  ForwardCompatibleArray,
   ForwardCompatibleNullable,
   ForwardCompatibleOptional,
   OmittedWhenNull,
@@ -1103,6 +1106,16 @@ export const ServerSettings = Schema.Struct({
   enableDeviceSupport: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   deviceOnboardingCompleted: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   deviceHosts: SshDeviceHostConfigs.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /**
+   * A malformed entry is dropped rather than failing the settings file; a
+   * repeated label resolves to its first entry. Without the outer
+   * `Array(Unknown)`, `withDecodingDefault` makes a malformed entry fail the
+   * whole file again.
+   */
+  peerEnvironments: Schema.Array(Schema.Unknown).pipe(
+    Schema.decodeTo(ForwardCompatibleArray(PeerEnvironmentConfig)),
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
@@ -1410,6 +1423,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
+  peerEnvironments: Schema.optionalKey(PeerEnvironmentConfigs),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
@@ -1499,6 +1513,9 @@ export function requiredScopesForServerSettingsPatch(
   return [
     ...(changesSettings || !changesProviders ? [AuthSettingsWriteScope] : []),
     ...(changesProviders ? [AuthProvidersManageScope] : []),
+    // A peer entry makes the server read any file it names and send it to any
+    // URL, which otherwise takes a terminal on the host.
+    ...(patch.peerEnvironments !== undefined ? [AuthTerminalOperateScope] : []),
   ];
 }
 

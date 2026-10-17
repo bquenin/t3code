@@ -18,6 +18,8 @@ import {
   RunId,
   NonNegativeInt,
   ProjectId,
+  PeerEnvironmentSource,
+  PeerEnvironmentTarget,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
@@ -27,6 +29,7 @@ import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as PeerEnvironments from "../../PeerEnvironments.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
@@ -243,13 +246,21 @@ const ThreadTransfersTool = Tool.make("t3_thread_transfers", {
 const ThreadSearchTool = Tool.make("t3_thread_search", {
   ...commandTool,
   description:
-    "Search active thread titles and content with the app's existing bounded search. Matches are limited to one project (projectId, else the calling thread's project) out of the global top matches, so this may return fewer than limit. A caller outside a T3 thread that omits projectId searches every project. No pagination or exhaustive-result guarantee.",
+    "Search active thread titles and content with the app's existing bounded search. Matches are limited to one project (projectId, else the calling thread's project) out of the global top matches, so this may return fewer than limit. A caller outside a T3 thread that omits projectId searches every project. Set environment to search a peer environment; omitting projectId there searches every project. No pagination or exhaustive-result guarantee.",
   parameters: Schema.Struct({
     ...OrchestrationSearchThreadsInput.fields,
     projectId: Schema.optional(ProjectId),
+    environment: PeerEnvironmentTarget,
   }),
-  success: OrchestrationSearchThreadsResult,
-  dependencies: [...commandTool.dependencies, ThreadSearch.ThreadSearch],
+  success: Schema.Struct({
+    ...OrchestrationSearchThreadsResult.fields,
+    environment: PeerEnvironmentSource,
+  }),
+  dependencies: [
+    ...commandTool.dependencies,
+    ThreadSearch.ThreadSearch,
+    PeerEnvironments.PeerEnvironments,
+  ],
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);

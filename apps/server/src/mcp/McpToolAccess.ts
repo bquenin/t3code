@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import type * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
@@ -17,6 +18,7 @@ import {
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./OrchestratorMcpService.ts";
+import * as PeerEnvironments from "./PeerEnvironments.ts";
 import {
   assertFullAccess,
   assertLiveCaller,
@@ -192,6 +194,75 @@ export const startsThreads = <P, A, E, R>(
       return yield* handle(params, started);
     }),
   );
+
+type PeerAccess = "reads" | "writes" | "starts";
+
+/**
+ * With `environment` set, the call runs on that peer instead of `local`. A
+ * peer thread does not exist here, so only the caller's own checks run here;
+ * the peer checks its target against this environment's token.
+ */
+export const forwardsToPeer = <
+  PS extends Schema.Top & { readonly Encoded: Readonly<Record<string, unknown>> },
+  S extends Schema.Top & { readonly Type: object },
+  P extends {
+    readonly environment?: string | undefined;
+    readonly runtimeMode?: RuntimeMode | undefined;
+    readonly interactionMode?: ProviderInteractionMode | undefined;
+  },
+  A,
+  E,
+  R,
+>(
+  tool: { readonly name: string; readonly parametersSchema: PS; readonly successSchema: S },
+  access: PeerAccess,
+  local: Declaration<(params: P) => Effect.Effect<A, E, R>>,
+) => {
+  const handleLocally = checkedHandler(local);
+  const encodeArgs = Schema.encodeUnknownEffect(tool.parametersSchema);
+  const decodeResult = Schema.decodeUnknownEffect(tool.successSchema);
+  const forward = Effect.fn("mcp.forwardToPeer")(function* (environment: string, params: P) {
+    const { environment: _environment, ...args } = params;
+    const { limits } = yield* access === "reads" ? readCaller() : orchestratingCaller;
+    const forwarded =
+      access === "starts"
+        ? {
+            ...args,
+            runtimeMode: yield* resolveRuntimeMode(limits.runtimeMode, params.runtimeMode),
+            interactionMode: yield* resolveInteractionMode(
+              limits.interactionMode,
+              params.interactionMode,
+            ),
+          }
+        : args;
+    const encoded = yield* encodeArgs(forwarded).pipe(Effect.mapError(unavailable));
+    const peers = yield* PeerEnvironments.PeerEnvironments;
+    const result = yield* peers.callTool(environment, tool.name, encoded);
+    const decoded = yield* decodeResult(result).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "peer_unavailable",
+            message: `Peer environment ${environment} returned a result this server cannot read. The two environments may run different T3 Code versions.`,
+          }),
+      ),
+    );
+    return { ...decoded, environment };
+  });
+  type Forwarded = ReturnType<typeof forward>;
+  return declare(
+    (
+      params: P,
+    ): Effect.Effect<
+      A | Effect.Success<Forwarded>,
+      E | Effect.Error<Forwarded>,
+      R | Effect.Services<Forwarded>
+    > =>
+      params.environment === undefined
+        ? handleLocally(params)
+        : forward(params.environment, params),
+  );
+};
 
 const fullAccessRequired =
   "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.";

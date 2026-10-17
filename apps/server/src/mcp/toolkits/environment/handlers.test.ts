@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -22,6 +23,7 @@ import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
+import * as PeerEnvironments from "../../PeerEnvironments.ts";
 import * as EnvironmentHandlers from "./handlers.ts";
 import { EnvironmentToolkit } from "./tools.ts";
 
@@ -88,6 +90,7 @@ it.effect("updates preferences for a thread caller through the /mcp registration
         ),
         Layer.provide(layerEnvironment),
         Layer.provide(Settings.layerTest()),
+        Layer.provide(Layer.mock(PeerEnvironments.PeerEnvironments)({})),
       ),
     ),
   ),
@@ -161,4 +164,46 @@ it.effect("refuses a preferences update when the caller's turn ends while it wai
       ),
     );
   }),
+);
+
+it.effect("lists configured peer environments without their token files", () =>
+  Effect.gen(function* () {
+    const toolkit = yield* EnvironmentToolkit;
+    const result = yield* toolkit
+      .handle("t3_environment_read", {})
+      .pipe(Stream.unwrap, Stream.runCollect);
+    expect(result.at(-1)?.result).toMatchObject({
+      peerEnvironments: [{ label: "build-box", url: "http://127.0.0.1:3790" }],
+    });
+    expect(JSON.stringify(result.at(-1)?.result)).not.toContain("peer-token");
+  }).pipe(
+    Effect.provide(
+      McpToolAccess.HandlersLayer.layer(EnvironmentHandlers.layer).pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            ThreadCommandExecutor.layer,
+            Layer.succeed(McpInvocationContext.McpInvocationContext, caller),
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+            }),
+            layerEnvironment,
+            PeerEnvironments.layer,
+          ).pipe(
+            Layer.provideMerge(
+              Settings.layerTest({
+                peerEnvironments: [
+                  {
+                    label: "build-box",
+                    url: "http://127.0.0.1:3790",
+                    bearerTokenFile: "/tmp/peer-token",
+                  },
+                ],
+              }),
+            ),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      ),
+    ),
+  ),
 );

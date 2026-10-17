@@ -88,6 +88,58 @@ Any agent that supports remote MCP servers over HTTP with OAuth can connect. Giv
 it the MCP URL and choose OAuth, and the agent finds the sign-in settings itself.
 Agents without OAuth support cannot connect.
 
+## Reach other environments
+
+Agents in one environment can also work with threads in your other environments,
+such as a desktop app on your laptop driving a server on a remote machine. The
+environment the agents run in is the hub; each environment it reaches is a peer.
+Peers need no setup beyond a token.
+
+1. On the peer, mint a token for the hub:
+
+   ```sh
+   t3 auth session issue --mcp-client-access full-access --label hub --ttl 8760h --token-only
+   ```
+
+   The access works like the mode you choose for an outside agent: `read-only`
+   only reads, and threads the hub starts on the peer cannot run with broader
+   permissions than the access you pick.
+
+2. On the hub, save the token in a file only you can read, then add the peer to
+   the server's `settings.json` in its `userdata` directory:
+
+   ```json
+   {
+     "peerEnvironments": [
+       {
+         "label": "build-box",
+         "url": "http://127.0.0.1:3790",
+         "bearerTokenFile": "/home/me/.t3/build-box.token"
+       }
+     ]
+   }
+   ```
+
+   `label` is a short lowercase name (letters, digits and `-`). `url` is the
+   peer's address without `/mcp`. Changes apply without a restart.
+
+Agents on the hub see the peers in `t3_environment_read` and pass a label as
+`environment` to `t3_project_list`, `t3_thread_list`, `t3_thread_search`,
+`t3_thread_read`, `t3_thread_send`, `t3_thread_wait` and `t3_thread_launch`.
+
+- The hub must reach the peer's URL itself: over Tailscale, a tunnel, or an
+  SSH forward. When you SSH from the peer's machine to the hub's, forward the
+  peer's port with `-R` (or `RemoteForward`), for example
+  `ssh -R 3790:127.0.0.1:3773 hub-host` (3773 is the desktop app's usual port); when you SSH from the hub's machine to
+  the peer's, use `-L` (or `LocalForward`).
+- Peer calls only work while the peer's server is running.
+- Ids from a peer only mean something there. Results from a peer carry its
+  `environment`; pass the same `environment` with any thread or project id
+  from them. Listing threads or launching on a peer needs a `projectId` from
+  that peer's `t3_project_list`, or `scratch: true` for a launch.
+- To cut a hub off, revoke its session on the peer in **Settings →
+  Connections** or with `t3 auth session revoke`.
+
 ## Remove an agent
 
 Approved agents appear under **Settings → Connections** like other clients.

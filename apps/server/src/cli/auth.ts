@@ -1,10 +1,10 @@
-import { AuthSessionId, AuthStandardClientScopes } from "@t3tools/contracts";
+import { AuthMcpClientAccess, AuthSessionId, AuthStandardClientScopes } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
-import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
+import { Argument, CliError, Command, Flag, GlobalFlag } from "effect/cli";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 
@@ -15,7 +15,7 @@ import {
   formatSessionList,
 } from "../cliAuthFormat.ts";
 import * as ServerConfig from "../config.ts";
-import { authScopesFlag } from "./authScopes.ts";
+import { authScopesFlag, explicitAuthScopesFlag } from "./authScopes.ts";
 import {
   authLocationFlags,
   type CliAuthLocationFlags,
@@ -157,27 +157,53 @@ const pairingCommand = Command.make("pairing").pipe(
   Command.withSubcommands([pairingCreateCommand, pairingListCommand, pairingRevokeCommand]),
 );
 
+const mcpClientAccessFlag = Flag.Literals("mcp-client-access", AuthMcpClientAccess.literals).pipe(
+  Flag.withDescription(
+    "Issue an MCP client token with this access, like an approved outside agent: threads it starts or messages cannot run with broader permissions. A hub environment stores it to reach this one as a peer. Not with --scope or --subject.",
+  ),
+  Flag.optional,
+);
+
 const sessionIssueCommand = Command.make("issue", {
   ...authLocationFlags,
-  scopes: authScopesFlag(AuthStandardClientScopes),
+  scopes: explicitAuthScopesFlag(AuthStandardClientScopes),
+  mcpClientAccess: mcpClientAccessFlag,
   ttl: ttlFlag,
   label: labelFlag,
   subject: subjectFlag,
   tokenOnly: tokenOnlyFlag,
   json: jsonFlag,
 }).pipe(
-  Command.withDescription("Issue a scoped bearer access token for headless or remote clients."),
+  Command.withDescription(
+    "Issue a scoped bearer access token for headless or remote clients. With --mcp-client-access, issue the MCP client token a hub environment uses to reach this one as a peer.",
+  ),
   Command.withHandler((flags) =>
     runWithEnvironmentAuth(
       flags,
       (environmentAuth) =>
         Effect.gen(function* () {
-          const issued = yield* environmentAuth.issueSession({
-            scopes: flags.scopes,
-            ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
-            ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
-            ...(Option.isSome(flags.subject) ? { subject: flags.subject.value } : {}),
-          });
+          const ttl = Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {};
+          if (
+            Option.isSome(flags.mcpClientAccess) &&
+            (flags.scopes.length > 0 || Option.isSome(flags.subject))
+          ) {
+            const userMessage =
+              "--mcp-client-access sets the token's scopes and subject itself; drop --scope and --subject.";
+            return yield* new CliError.UserError({ cause: userMessage, userMessage });
+          }
+          const issued = Option.isSome(flags.mcpClientAccess)
+            ? yield* environmentAuth.issueMcpClientSession({
+                label: Option.getOrElse(flags.label, () => "MCP client"),
+                access: flags.mcpClientAccess.value,
+                client: { deviceType: "bot" },
+                ...ttl,
+              })
+            : yield* environmentAuth.issueSession({
+                ...(flags.scopes.length > 0 ? { scopes: flags.scopes } : {}),
+                ...ttl,
+                ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
+                ...(Option.isSome(flags.subject) ? { subject: flags.subject.value } : {}),
+              });
           yield* Console.log(
             formatIssuedSession(issued, {
               json: flags.json,
