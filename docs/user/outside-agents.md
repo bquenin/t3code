@@ -103,7 +103,9 @@ Peers need no setup beyond a token.
 
    The access works like the mode you choose for an outside agent: `read-only`
    only reads, and threads the hub starts on the peer cannot run with broader
-   permissions than the access you pick.
+   permissions than the access you pick. It is also the ceiling for everything
+   the hub's agents do on the peer, so pick the access you would grant those
+   agents themselves.
 
 2. On the hub, save the token in a file only you can read, then add the peer to
    the server's `settings.json` in its `userdata` directory:

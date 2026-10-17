@@ -276,6 +276,11 @@ export const forwardsToPeer = <
             decodePeerTarget(result).pipe(Effect.mapError(() => unreadablePeerResult(environment))),
           ),
         );
+      // The local path rechecks the target when the message is accepted. A
+      // peer cannot know this caller's limits, so a mode raised on the peer
+      // between this read and acceptance is caught only by the ceiling of
+      // the stored token. Keep that ceiling no broader than what the hub's
+      // own agents may hold.
       yield* assertTargetWithinLimits(limits, target.thread);
     }
     const result = yield* peers.callTool(environment, tool.name, encoded, {
