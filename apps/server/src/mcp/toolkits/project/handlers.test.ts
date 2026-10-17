@@ -26,6 +26,7 @@ import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../../../vcs/VcsProcess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as PeerEnvironments from "../../PeerEnvironments.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
 
@@ -49,6 +50,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
     let launchedSender: ThreadId | undefined;
     const layerDependencies = Layer.mergeAll(
       ServerSettings.layerTest(),
+      Layer.mock(PeerEnvironments.PeerEnvironments)({}),
       NodeCrypto.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
@@ -121,6 +123,7 @@ it.effect("launches a scratch thread into the Scratch project", () =>
     const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
     const layerDependencies = Layer.mergeAll(
       ServerSettings.layerTest(),
+      Layer.mock(PeerEnvironments.PeerEnvironments)({}),
       NodeCrypto.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
@@ -219,6 +222,7 @@ it.effect("starts a project from just a title when workspaceRoot is omitted", ()
     };
     const layerDependencies = Layer.mergeAll(
       ServerSettings.layerTest(),
+      Layer.mock(PeerEnvironments.PeerEnvironments)({}),
       NodeCrypto.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
@@ -304,6 +308,7 @@ const clientLaunchHarness = (input: {
   readonly launched: Array<ThreadLaunch.ThreadLaunchInput>;
   readonly workspaceRoot?: string;
   readonly checkWorktreeBase?: ThreadLaunch.ThreadLaunchService["Service"]["checkWorktreeBase"];
+  readonly callPeerTool?: PeerEnvironments.PeerEnvironments["Service"]["callTool"];
 }) => {
   const projectId = ProjectId.make("project:client-target");
   const modelSelection = {
@@ -312,6 +317,9 @@ const clientLaunchHarness = (input: {
   };
   const layerDependencies = Layer.mergeAll(
     ServerSettings.layerTest(),
+    Layer.mock(PeerEnvironments.PeerEnvironments)(
+      input.callPeerTool === undefined ? {} : { callTool: input.callPeerTool },
+    ),
     NodeCrypto.layer,
     Layer.succeed(McpInvocationContext.McpInvocationContext, {
       environmentId: EnvironmentId.make("environment"),
@@ -502,5 +510,106 @@ it.effect("a launch into a new worktree creates nothing when its base ref has no
 
     expect((yield* launchFrom("main")).at(-1)?.result).toMatchObject({ projectId });
     expect(launched).toHaveLength(1);
+  }),
+);
+
+it.effect("launches in a peer environment with the modes clamped to the caller's ceiling", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const forwarded: Array<{
+      readonly label: string;
+      readonly args: unknown;
+      readonly retryUncertain: boolean;
+    }> = [];
+    const { dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "auto-accept-edits",
+      launched,
+      callPeerTool: (label, _toolName, args, { retryUncertain }) => {
+        forwarded.push({ label, args, retryUncertain });
+        return Effect.succeed({
+          threadId: "thread:on-peer",
+          projectId: "project:on-peer",
+          modelSelection: { instanceId: "codex", model: "gpt-5" },
+          runId: null,
+          status: null,
+        });
+      },
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const launch = (runtimeMode?: "full-access") =>
+      toolkit
+        .handle("t3_thread_launch", {
+          title: "Fix",
+          projectId: ProjectId.make("project:on-peer"),
+          environment: "box",
+          ...(runtimeMode === undefined ? {} : { runtimeMode }),
+        })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+
+    expect((yield* launch()).at(-1)?.result).toMatchObject({
+      threadId: "thread:on-peer",
+      environment: "box",
+    });
+    expect(forwarded).toEqual([
+      {
+        label: "box",
+        args: {
+          title: "Fix",
+          projectId: "project:on-peer",
+          runtimeMode: "auto-accept-edits",
+          interactionMode: "default",
+        },
+        retryUncertain: false,
+      },
+    ]);
+
+    expect((yield* launch("full-access")).at(-1)?.result).toMatchObject({
+      code: "runtime_mode_escalation_denied",
+    });
+    expect(forwarded).toHaveLength(1);
+    expect(launched).toHaveLength(0);
+  }),
+);
+
+it.effect("refuses to forward attachments to a peer launch", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const forwarded: Array<string> = [];
+    const { dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      launched,
+      callPeerTool: (_label, toolName) => {
+        forwarded.push(toolName);
+        return Effect.die("a launch with attachments must not reach the peer");
+      },
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const result = yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Fix",
+        projectId: ProjectId.make("project:on-peer"),
+        environment: "box",
+        message: "Read the notes",
+        attachments: [
+          { type: "file", id: "upload-1", name: "notes.txt", mimeType: "text/plain", sizeBytes: 5 },
+        ],
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+
+    expect(result.at(-1)?.result).toMatchObject({
+      code: "invalid_request",
+      message:
+        "Attachments cannot be forwarded to a peer environment; upload them there or put the content in message.",
+    });
+    expect(forwarded).toEqual([]);
+    expect(launched).toHaveLength(0);
   }),
 );

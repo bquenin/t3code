@@ -3,6 +3,7 @@ import {
   BackgroundActivityProfileSelection,
   ExecutionEnvironmentDescriptor,
   OrchestratorMcpFailure,
+  PeerEnvironmentSummary,
   ServerSettings,
   ServerSettingsPatch,
 } from "@t3tools/contracts";
@@ -13,6 +14,7 @@ import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandE
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Settings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as PeerEnvironments from "../../PeerEnvironments.ts";
 
 const PreferenceFields = {
   defaultThreadEnvMode: ServerSettings.fields.defaultThreadEnvMode,
@@ -40,14 +42,16 @@ const shared = {
 const EnvironmentReadTool = Tool.make("t3_environment_read", {
   ...shared,
   description:
-    "Read this server's identity and selected environment preferences. Provider/model availability is exposed by orchestrator_capabilities. Writing instructions are limited to 4,000 characters.",
+    "Read this server's identity and selected environment preferences. Provider/model availability is exposed by orchestrator_capabilities. Writing instructions are limited to 4,000 characters. peerEnvironments lists other T3 environments this one can reach: pass a label as environment to t3_project_list, t3_thread_list, t3_thread_search, t3_thread_read, t3_thread_send, t3_thread_wait, or t3_thread_launch.",
   success: Schema.Struct({
     environmentId: ExecutionEnvironmentDescriptor.fields.environmentId,
     label: Schema.String,
     serverVersion: Schema.String,
     platform: ExecutionEnvironmentDescriptor.fields.platform,
     preferences: Schema.Struct(PreferenceFields),
+    peerEnvironments: Schema.Array(PeerEnvironmentSummary),
   }),
+  dependencies: [...shared.dependencies, PeerEnvironments.PeerEnvironments],
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);

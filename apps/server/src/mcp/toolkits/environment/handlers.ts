@@ -5,6 +5,7 @@ import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandE
 import * as Settings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as PeerEnvironments from "../../PeerEnvironments.ts";
 import { readCaller, unavailable } from "../../threadAccess.ts";
 import { EnvironmentToolkit } from "./tools.ts";
 
@@ -45,12 +46,14 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
     Effect.gen(function* () {
       const { descriptor, settings } = yield* access;
       const current = yield* settings.getSettings.pipe(Effect.mapError(unavailable));
+      const peers = yield* PeerEnvironments.PeerEnvironments;
       return {
         environmentId: descriptor.environmentId,
         label: descriptor.label,
         serverVersion: descriptor.serverVersion,
         platform: descriptor.platform,
         preferences: preferences(current),
+        peerEnvironments: yield* peers.list(),
       };
     }),
   ),

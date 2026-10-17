@@ -557,10 +557,8 @@ export class EnvironmentAuth extends Context.Service<
       readonly label: string;
       readonly access: AuthMcpClientAccess;
       readonly client: AuthClientMetadata;
-    }) => Effect.Effect<
-      { readonly token: string; readonly expiresAt: DateTime.DateTime },
-      ServerAuthInternalError
-    >;
+      readonly ttl?: Duration.Duration;
+    }) => Effect.Effect<IssuedBearerSession, ServerAuthInternalError>;
     /**
      * Spends a one-time pairing code as approval for an MCP client with the
      * given access; the code must hold every scope that access grants.
@@ -1287,12 +1285,23 @@ export const make = Effect.gen(function* () {
         subject: MCP_CLIENT_SUBJECT,
         method: "bearer-access-token",
         scopes: mcpClientScopes(input.access),
-        ttl: MCP_CLIENT_SESSION_TTL,
+        ttl: input.ttl ?? MCP_CLIENT_SESSION_TTL,
         ...(input.access === "read-only" ? {} : { runtimeModeCeiling: input.access }),
         client: { ...input.client, label: input.label, deviceType: "bot" },
       })
       .pipe(
-        Effect.map((issued) => ({ token: issued.token, expiresAt: issued.expiresAt })),
+        Effect.map(
+          (issued) =>
+            ({
+              sessionId: issued.sessionId,
+              token: issued.token,
+              method: "bearer-access-token",
+              scopes: issued.scopes,
+              subject: MCP_CLIENT_SUBJECT,
+              client: issued.client,
+              expiresAt: DateTime.toUtc(issued.expiresAt),
+            }) satisfies IssuedBearerSession,
+        ),
         Effect.mapError((cause) => new ServerAuthSessionTokenIssueError({ cause })),
         Effect.withSpan("EnvironmentAuth.issueMcpClientSession"),
       );
