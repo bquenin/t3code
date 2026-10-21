@@ -3,7 +3,7 @@ import {
   type RepositoryIdentity,
   type ThreadLinkedPullRequest,
 } from "@t3tools/contracts";
-import { canonicalRepositoryKey } from "./sourceControl.ts";
+import { canonicalRepositoryKey, isGitHubHost } from "./sourceControl.ts";
 
 /**
  * The two strings are what `pullRequestHostOf` and the project's `repositoryIdentity` produce
@@ -36,7 +36,7 @@ export function parseChangeRequestUrl(targetUrl: string): ChangeRequestLink | nu
     const match = /^\/([^/]+\/[^/]+)\/pulls\/(\d+)(?:\/|$)/u.exec(url.pathname);
     return claim(host, match);
   }
-  if (isHostOf(host, "github.com", "github")) {
+  if (isGitHubHost(host)) {
     const match = /^\/([^/]+\/[^/]+)\/pull\/(\d+)(?:\/|$)/u.exec(url.pathname);
     if (match) return claim(host, match);
   }
@@ -163,11 +163,7 @@ export function pullRequestCandidateUrlFromReferenceAutolink(targetUrl: string):
   }
   if (
     (url.protocol !== "https:" && url.protocol !== "http:") ||
-    !(
-      url.hostname.toLowerCase() === "github.com" ||
-      url.hostname.toLowerCase().endsWith(".github.com") ||
-      url.hostname.toLowerCase().split(".").includes("github")
-    )
+    !isGitHubHost(url.hostname.toLowerCase())
   ) {
     return null;
   }

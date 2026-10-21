@@ -179,8 +179,12 @@ function hasDnsLabel(host: string, label: string): boolean {
   return host.split(".").includes(label);
 }
 
-function isGitHubHost(host: string): boolean {
-  return host === "github.com" || hasDnsLabel(host, "github");
+/** Enterprise Server hosts also come per environment, such as `github-dev.example.com`. */
+export function isGitHubHost(host: string): boolean {
+  return (
+    host === "github.com" ||
+    host.split(".").some((label) => label === "github" || label.startsWith("github-"))
+  );
 }
 
 function isGitLabHost(host: string): boolean {
