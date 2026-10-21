@@ -33,7 +33,7 @@ import * as PeerEnvironments from "../../PeerEnvironments.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
-    "Pin, snooze, settle, archive, or mark a thread unread. Omit threadId for this thread. snooze requires snoozedUntil. Existing thread lifecycle rules apply. Settling this thread takes effect when your turn completes, returning settlesWhenTurnEnds=true; a turn that fails or is interrupted, or a queued message, leaves it active.",
+    "Pin, snooze, settle, archive, or mark a thread unread. Omit threadId for this thread. Set environment with threadId to organize a peer environment's thread. snooze requires snoozedUntil. Existing thread lifecycle rules apply. Settling this thread takes effect when your turn completes, returning settlesWhenTurnEnds=true; a turn that fails or is interrupted, or a queued message, leaves it active.",
   parameters: Schema.Struct({
     threadId: Schema.optional(ThreadId),
     action: Schema.Literals([
@@ -48,10 +48,17 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
       "mark_unread",
     ]),
     snoozedUntil: Schema.optional(IsoDateTime),
+    environment: PeerEnvironmentTarget,
   }),
   success: Schema.Union([
-    OrchestrationV2DispatchCommandResult,
-    Schema.Struct({ settlesWhenTurnEnds: Schema.Literal(true) }),
+    Schema.Struct({
+      ...OrchestrationV2DispatchCommandResult.fields,
+      environment: PeerEnvironmentSource,
+    }),
+    Schema.Struct({
+      settlesWhenTurnEnds: Schema.Literal(true),
+      environment: PeerEnvironmentSource,
+    }),
   ]),
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
@@ -59,6 +66,7 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
     Crypto.Crypto,
+    PeerEnvironments.PeerEnvironments,
   ],
 })
   .annotate(Tool.Title, "Organize a thread")
