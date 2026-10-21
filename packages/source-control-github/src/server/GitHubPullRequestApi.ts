@@ -65,6 +65,7 @@ import {
   PullRequestReadsGraphQLGroup,
 } from "./pullRequestReads.graphql.ts";
 import { PullRequestReviewsGraphQLGroup } from "./pullRequestReviews.graphql.ts";
+import { PullRequestStacksGraphQLGroup } from "./pullRequestStacks.graphql.ts";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import {
@@ -476,6 +477,9 @@ export interface GitHubPullRequestStat {
 const STAT_ALIASES_PER_REQUEST = 25;
 // Cache checks stagger reads across scheduler ticks; allow time to batch.
 const SUMMARY_BATCH_WINDOW = "10 millis";
+
+/** Enterprise Server has no pull request stacks, so only github.com is asked about them. */
+const hasPullRequestStacks = (host: string) => host.toLowerCase() === "github.com";
 
 export interface GitHubPullRequestSearchBatch {
   readonly items: ReadonlyArray<GitHubPullRequestSearchItem>;
@@ -1060,6 +1064,7 @@ const PullRequestGraphQLGroup = GraphQLGroup.merge(
   PullRequestReadsGraphQLGroup,
   PullRequestReviewsGraphQLGroup,
   PullRequestMutationsGraphQLGroup,
+  PullRequestStacksGraphQLGroup,
 ).middleware(GitHubGraphQlClient.GitHubGraphQlAuth);
 
 interface RestReadInput<A> {
@@ -1868,6 +1873,13 @@ export const make = Effect.gen(function* () {
     RequestResolver.setDelay(SUMMARY_BATCH_WINDOW),
     RequestResolver.batchN(STAT_ALIASES_PER_REQUEST),
   );
+  // The same summaries' stack membership on github.com, batched alongside them.
+  const summaryStackResolver = GraphQLResolver.aliased(client.PullRequestStackMembership, {
+    batchKey: GitHubGraphQlClient.batchKey,
+  }).pipe(
+    RequestResolver.setDelay(SUMMARY_BATCH_WINDOW),
+    RequestResolver.batchN(STAT_ALIASES_PER_REQUEST),
+  );
   const getPullRequestSummary: GitHubPullRequestApi["Service"]["getPullRequestSummary"] = Effect.fn(
     "GitHubPullRequestApi.getPullRequestSummary",
   )(
@@ -1879,9 +1891,27 @@ export const make = Effect.gen(function* () {
           operation: "getPullRequestSummary",
         });
       }
-      const result = yield* GraphQLResolver.request(
-        { ...lookup, stacks: input.host.toLowerCase() === "github.com" },
-        summaryResolver,
+      const [result, membership] = yield* Effect.all(
+        [
+          GraphQLResolver.request(lookup, summaryResolver),
+          hasPullRequestStacks(input.host)
+            ? GraphQLResolver.request(lookup, summaryStackResolver).pipe(
+                Effect.map((answer) => answer.repository?.pullRequest ?? undefined),
+                // The summary read reports a pull request GitHub cannot find.
+                Effect.catchIf(isNotFoundOnly, () => Effect.undefined),
+                // A summary without a stack has its stack read on its own, so a failed membership
+                // read must not fail the summary with it.
+                Effect.catch((error) =>
+                  Effect.logWarning("Pull request stack membership read failed", {
+                    operation: "getPullRequestSummary",
+                    host: input.host,
+                    error: error._tag,
+                  }).pipe(Effect.as(undefined)),
+                ),
+              )
+            : Effect.undefined,
+        ],
+        { concurrency: "unbounded" },
       );
       const pullRequest = result.repository?.pullRequest;
       if (pullRequest == null) {
@@ -1890,7 +1920,7 @@ export const make = Effect.gen(function* () {
           operation: "getPullRequestSummary",
         });
       }
-      return toPullRequestSummary(pullRequest);
+      return toPullRequestSummary(pullRequest, membership);
     },
     (effect, input) =>
       effect.pipe((effect) =>
@@ -1928,6 +1958,42 @@ export const make = Effect.gen(function* () {
   const stackMembershipResolver = GraphQLResolver.aliased(client.PullRequestStackMembership, {
     batchKey: GitHubGraphQlClient.batchKey,
   }).pipe(RequestResolver.batchN(STAT_ALIASES_PER_REQUEST));
+  /** Stack badges for rows already read; only github.com has stacks. */
+  const withStackMemberships = <Item extends GitHubPullRequestListItem>(
+    host: string,
+    items: ReadonlyArray<Item>,
+    repositoryOf: (item: Item) => string,
+  ) => {
+    if (!hasPullRequestStacks(host) || items.length === 0) return Effect.succeed(items);
+    return Effect.forEach(
+      items,
+      (item) => {
+        const lookup = pullRequestLookup({ repository: repositoryOf(item), number: item.number });
+        if (lookup === null) return Effect.succeed(item);
+        return GraphQLResolver.request(lookup, stackMembershipResolver).pipe(
+          Effect.map((result) => {
+            const pullRequest = result.repository?.pullRequest;
+            const stack = pullRequest == null ? undefined : toStackMembership(pullRequest);
+            return stack === undefined ? item : { ...item, stack };
+          }),
+          // Optional badges must not take down a listing that already read successfully.
+          Effect.catch((error) =>
+            Effect.logWarning("Pull request stack membership enrichment failed", {
+              operation: "listPullRequestStackMemberships",
+              host,
+              error: error._tag,
+            }).pipe(Effect.as(item)),
+          ),
+        );
+      },
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.provideService(GitHubGraphQlClient.GitHubGraphQlTarget, {
+        host,
+        operation: "listPullRequestStackMemberships",
+      }),
+    );
+  };
   // GitHub has no bulk viewed-file mutation; aliases combine individual paths into one request.
   const setFileViewedResolver = GraphQLResolver.aliased(client.SetFileViewed, {
     batchKey: GitHubGraphQlClient.batchKey,
@@ -1962,7 +2028,6 @@ export const make = Effect.gen(function* () {
         endCursor: page.endCursor,
         pageInfo: { hasNextPage: page.endCursor !== null, endCursor: page.endCursor },
       });
-      const stacks = input.host.toLowerCase() === "github.com";
       // Search cannot exclude numbers, so the rows already delivered at the boundary come back
       // first; read past them so they do not use up the limit.
       const seenAt = new Set(input.cursor?.seenAt ?? []);
@@ -1979,8 +2044,6 @@ export const make = Effect.gen(function* () {
                   q: query,
                   first: pageRows(rows),
                   after,
-                  // Stack badges come from their own batched read below, for the rows that stay.
-                  stacks: false,
                   stats: true,
                 })
                 .pipe(Effect.map((result) => toPage(toPullRequestRows(result.search))))
@@ -1991,7 +2054,6 @@ export const make = Effect.gen(function* () {
                   states: LIST_STATES[input.state],
                   first: pageRows(rows),
                   after,
-                  stacks: false,
                   stats: true,
                 })
                 .pipe(
@@ -2036,40 +2098,11 @@ export const make = Effect.gen(function* () {
           onFailure: (error) =>
             listingServes && isGitHubServerError(error) ? read(false) : Effect.fail(error),
         }),
-        Effect.filterOrElse(
-          (batch) => !stacks || batch.items.length === 0,
-          (batch) =>
-            Effect.forEach(
-              batch.items,
-              (item) => {
-                const lookup = pullRequestLookup({
-                  repository: input.repository,
-                  number: item.number,
-                });
-                if (lookup === null) return Effect.succeed(item);
-                return GraphQLResolver.request(lookup, stackMembershipResolver).pipe(
-                  Effect.map((result) => {
-                    const pullRequest = result.repository?.pullRequest;
-                    const stack = pullRequest == null ? undefined : toStackMembership(pullRequest);
-                    return stack === undefined ? item : { ...item, stack };
-                  }),
-                  Effect.catch((error) =>
-                    Effect.logWarning("Pull request stack membership enrichment failed", {
-                      operation: "listPullRequestStackMemberships",
-                      host: input.host,
-                      error: error._tag,
-                    }).pipe(Effect.as(item)),
-                  ),
-                );
-              },
-              { concurrency: "unbounded" },
-            ).pipe(
-              Effect.provideService(GitHubGraphQlClient.GitHubGraphQlTarget, {
-                host: input.host,
-                operation: "listPullRequestStackMemberships",
-              }),
-              Effect.map((items) => ({ ...batch, items })),
-            ),
+        // Enrich only rows that survived paging.
+        Effect.flatMap((batch) =>
+          withStackMemberships(input.host, batch.items, () => input.repository).pipe(
+            Effect.map((items) => ({ ...batch, items })),
+          ),
         ),
       );
       // GitHub answers a private repository the token cannot see as missing, and its error names
@@ -2107,7 +2140,6 @@ export const make = Effect.gen(function* () {
           ({ repository, number }) => `${repository.trim().toLowerCase()}#${number}`,
         ),
       );
-      const stacks = input.host.toLowerCase() === "github.com";
       let endedShort = false;
       const {
         items: rawItems,
@@ -2116,35 +2148,39 @@ export const make = Effect.gen(function* () {
       } = yield* collect(
         Math.min(input.limit + 1, PULL_REQUEST_SEARCH_MAX_ROWS) + seenAt.size,
         (after, rows) =>
-          client
-            .PullRequestSearch({ q: query, first: pageRows(rows), after, stacks, stats: false })
-            .pipe(
-              graphql({ ...input, operation: "searchPullRequests" }),
-              Effect.map(({ search }) => {
-                const page = toPullRequestRows(search);
-                // A short page that says it has more is where this read stops, not a gap to read past.
-                const short = page.endCursor !== null && page.rawCount < pageRows(rows);
-                if (short) endedShort = true;
-                return {
-                  items: page.rows.flatMap(({ item, repository }) =>
-                    repository === null ? [] : [{ ...item, repository }],
-                  ),
-                  rawCount: page.rawCount,
-                  endCursor: short ? null : page.endCursor,
-                };
-              }),
-            ),
+          client.PullRequestSearch({ q: query, first: pageRows(rows), after, stats: false }).pipe(
+            graphql({ ...input, operation: "searchPullRequests" }),
+            Effect.map(({ search }) => {
+              const page = toPullRequestRows(search);
+              // A short page that says it has more is where this read stops, not a gap to read past.
+              const short = page.endCursor !== null && page.rawCount < pageRows(rows);
+              if (short) endedShort = true;
+              return {
+                items: page.rows.flatMap(({ item, repository }) =>
+                  repository === null ? [] : [{ ...item, repository }],
+                ),
+                rawCount: page.rawCount,
+                endCursor: short ? null : page.endCursor,
+              };
+            }),
+          ),
       );
       const items = rawItems.filter(
         (item) =>
           item.updatedAt !== input.cursor?.updatedBefore ||
           !seenAt.has(`${item.repository.trim().toLowerCase()}#${item.number}`),
       );
-      return {
-        items: items.slice(0, input.limit),
-        truncated:
-          truncated || endedShort || rawCount - (rawItems.length - items.length) > input.limit,
-      };
+      return yield* withStackMemberships(
+        input.host,
+        items.slice(0, input.limit),
+        (item) => item.repository,
+      ).pipe(
+        Effect.map((visible) => ({
+          items: visible,
+          truncated:
+            truncated || endedShort || rawCount - (rawItems.length - items.length) > input.limit,
+        })),
+      );
     }),
 
     listPullRequestStats: Effect.fn("GitHubPullRequestApi.listPullRequestStats")(
