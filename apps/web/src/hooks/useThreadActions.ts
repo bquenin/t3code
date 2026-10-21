@@ -723,32 +723,20 @@ export function useThreadActions() {
       );
     }
     const resolved = resolveThreadTarget(target);
-    // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
     const nowIso = new Date().toISOString();
     const wokeAt = resolved ? threadWokeAt(resolved.thread, { now: nowIso }) : null;
-    const undoPlan = ThreadUndo.planThreadUndo("settle", resolved?.thread);
     // An older unpin/snooze Undo would re-pin or re-snooze, and the server
     // treats either as a promotion that un-settles; settling supersedes them.
     ThreadUndo.invalidate("pin", scopedThreadKey(target));
     ThreadUndo.invalidate("snooze", scopedThreadKey(target));
-    const action = ThreadUndo.begin("settle", scopedThreadKey(target));
+    // Local patch: settling never shows the "Settled" undo notice.
     const result = await settleThreadMutation({
       environmentId: target.environmentId,
       input: { threadId: target.threadId },
     });
-    if (result._tag !== "Success") {
-      action.finish();
-      return result;
-    }
-    if (wokeAt !== null) {
+    if (result._tag === "Success" && wokeAt !== null) {
       markThreadVisited(scopedThreadKey(target), wokeAt);
     }
-    showThreadUndoNotice({
-      action: "Settled",
-      claim: action,
-      undo: () => runUndoPlan(target, undoPlan),
-      failureTitle: "Failed to undo settle",
-    });
     return result;
   };
 

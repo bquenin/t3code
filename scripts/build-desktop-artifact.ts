@@ -991,6 +991,7 @@ export const DESKTOP_FILE_EXCLUSIONS = [
   "!apps/desktop/prod-resources/windows-server/**/*",
   "!apps/desktop/prod-resources/wsl-runtime.tar.gz",
   "!apps/desktop/prod-resources/wsl-runtime.tar.gz.sha256",
+  "!apps/desktop/prod-resources/ssh-server.tar.gz*",
   "!apps/desktop/gnome-extension",
   "!apps/desktop/gnome-extension/**/*",
 ] as const;
@@ -1088,6 +1089,11 @@ export const DESKTOP_EXTRA_RESOURCES = [
   {
     from: "apps/desktop/prod-resources/resource-monitor",
     to: "resource-monitor",
+  },
+  {
+    from: "apps/desktop/prod-resources",
+    to: ".",
+    filter: ["ssh-server.tar.gz", "ssh-server.tar.gz.sha256"],
   },
 ] as const;
 export const LINUX_CAPTURE_EXTRA_RESOURCES = [
@@ -2983,6 +2989,90 @@ const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(f
   }
 });
 
+/** Source builds carry their compiled server and a frozen native dependency install. */
+export const stageSshSourceBundle = Effect.fn("stageSshSourceBundle")(function* (input: {
+  readonly repoRoot: string;
+  readonly serverDist: string;
+  readonly resourcesDir: string;
+  readonly verbose: boolean;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const stage = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ssh-source-" });
+  const workspace = yield* readWorkspaceConfig();
+  const dependencies: Record<string, string> = {};
+  const packageVersion = Schema.decodeEffect(
+    Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
+  );
+  for (const name of Object.keys(
+    selectCliRuntimeExternalDependencies(serverPackageJson.dependencies),
+  )) {
+    const manifest = yield* packageVersion(
+      yield* fs.readFileString(
+        path.join(input.repoRoot, "apps/server/node_modules", name, "package.json"),
+      ),
+    );
+    dependencies[name] = manifest.version;
+  }
+  const patchedDependencies = createStagePatchedDependencies(
+    workspace.patchedDependencies ?? {},
+    dependencies,
+  );
+  yield* fs.writeFileString(
+    path.join(stage, "package.json"),
+    `${yield* encodeJsonString({
+      name: "t3-ssh-source",
+      version: serverPackageJson.version,
+      private: true,
+      packageManager: rootPackageJson.packageManager,
+      dependencies,
+    })}\n`,
+  );
+  yield* fs.writeFileString(
+    path.join(stage, "pnpm-workspace.yaml"),
+    yield* encodeJsonString({
+      // JSON is valid YAML. Native packages must be installed on the SSH host,
+      // since node-pty's Linux addon is compiled for that host's Node ABI.
+      nodeLinker: "hoisted",
+      allowBuilds: workspace.allowBuilds ?? {},
+      patchedDependencies,
+    }),
+  );
+  if (Object.keys(patchedDependencies).length > 0) {
+    yield* fs.makeDirectory(path.join(stage, "patches"));
+    for (const patch of Object.values(patchedDependencies)) {
+      yield* fs.copyFile(path.join(input.repoRoot, patch), path.join(stage, patch));
+    }
+  }
+  const install = yield* resolveSpawnCommand("vp", ["install", "--lockfile-only"]);
+  yield* runCommand(
+    ChildProcess.make(install.command, install.args, { cwd: stage, shell: install.shell }),
+    {
+      label: "Lock SSH server native dependencies",
+      verbose: input.verbose,
+    },
+  );
+  yield* fs.copy(input.serverDist, path.join(stage, "dist"));
+  for (const entry of yield* fs.readDirectory(path.join(stage, "dist"), { recursive: true })) {
+    if (entry.endsWith(".map")) yield* fs.remove(path.join(stage, "dist", entry));
+  }
+  // Native helpers from the desktop's platform cannot run on an SSH host.
+  yield* fs.remove(path.join(stage, "dist/resource-monitor"), { recursive: true, force: true });
+  yield* fs.makeDirectory(input.resourcesDir, { recursive: true });
+  const archivePath = path.join(input.resourcesDir, "ssh-server.tar.gz");
+  yield* runCommand(ChildProcess.make("tar", ["-czf", archivePath, "-C", stage, "."]), {
+    label: "Archive source-built SSH server",
+    verbose: input.verbose,
+  });
+  const hash = NodeCrypto.createHash("sha256");
+  yield* fs
+    .stream(archivePath)
+    .pipe(Stream.runForEach((chunk) => Effect.sync(() => hash.update(chunk))));
+  const digest = hash.digest("hex");
+  yield* fs.writeFileString(`${archivePath}.sha256`, `${digest}\n`);
+  yield* Effect.log(`[desktop-artifact] Bundled source-built SSH server (${digest.slice(0, 12)}).`);
+});
+
 // The digest verifies extraction and names the cache; hash the exact archive bytes that ship.
 export const stageWslRuntimeArchive = Effect.fn("stageWslRuntimeArchive")(function* (input: {
   readonly sourceArchivePath: string;
@@ -3757,6 +3847,29 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
+
+  // A package version alone does not identify a source build. Only an exact,
+  // clean release checkout can safely use the published server of that version.
+  const releaseTag = yield* spawnAndCollectOutput(
+    ChildProcess.make(
+      "git",
+      ["describe", "--exact-match", "--tags", "--match", `v${appVersion}`, "HEAD"],
+      { cwd: repoRoot },
+    ),
+  ).pipe(Effect.orElseSucceed(() => ({ stdout: "", stderr: "", exitCode: 1 })));
+  const sourceState = yield* spawnAndCollectOutput(
+    ChildProcess.make("git", ["status", "--porcelain", "--untracked-files=normal"], {
+      cwd: repoRoot,
+    }),
+  ).pipe(Effect.orElseSucceed(() => ({ stdout: "unknown", stderr: "", exitCode: 1 })));
+  if (releaseTag.exitCode !== 0 || sourceState.exitCode !== 0 || sourceState.stdout.trim() !== "") {
+    yield* stageSshSourceBundle({
+      repoRoot,
+      serverDist: distDirs.serverDist,
+      resourcesDir: stageProdResourcesDir,
+      verbose: options.verbose,
+    });
+  }
 
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed

@@ -14,7 +14,7 @@ import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { useRightPanelStore } from "../rightPanelStore";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { readProjects, useProjects } from "../state/entities";
+import { readProjects, readThreadShell, readThreadShells, useProjects } from "../state/entities";
 import { environmentServerConfigsAtom, serverEnvironment } from "../state/server";
 import { usePrimaryEnvironmentId } from "../state/environments";
 
@@ -66,6 +66,8 @@ export function useOpenChangeRequestLink(
       environmentId: resolvedThreadRef?.environmentId ?? targetEnvironmentId,
       primaryEnvironmentId,
       lendHostProject: resolvedPanelRef !== undefined,
+      linkedThreads: () =>
+        resolvedThreadRef ? [readThreadShell(resolvedThreadRef)] : readThreadShells(),
     });
     if (target === null) return false;
     const { project, repository, number, host } = target;

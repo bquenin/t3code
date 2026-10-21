@@ -362,6 +362,8 @@ const layerRepositoryIdentityResolver = Layer.effect(
 const layerPullRequestService = PullRequestService.layer.pipe(
   Layer.provide(PullRequestProviderRegistry.layer),
   Layer.provide(PullRequestFilesViewed.layer),
+  // Saved thread links route pull requests for projects without a checkout.
+  Layer.provide(ProjectionStoreV2.layer),
   Layer.provide(PullRequestReadCache.layer),
   Layer.provide(layerSourceControlProviderRegistry),
   Layer.provide(SourceControlRateLimit.layer),

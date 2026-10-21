@@ -13,14 +13,11 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 
 import * as Electron from "electron";
 
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import type { RemoteT3RunnerOptions } from "@t3tools/ssh/tunnel";
-import serverPackageJson from "../../server/package.json" with { type: "json" };
 
 import * as DesktopIpc from "./ipc/DesktopIpc.ts";
 import * as ElectronApp from "./electron/ElectronApp.ts";
@@ -60,6 +57,7 @@ import * as DesktopPreReadyFileSystem from "./app/DesktopPreReadyFileSystem.ts";
 import * as DesktopPreReadyPlatform from "./app/DesktopPreReadyPlatform.ts";
 import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
 import * as DesktopSshEnvironment from "./ssh/DesktopSshEnvironment.ts";
+import { resolveDesktopSshCliRunner } from "./ssh/DesktopSshCliRunner.ts";
 import * as DesktopSshPasswordPrompts from "./ssh/DesktopSshPasswordPrompts.ts";
 import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopLegacyLocalStorage from "./app/DesktopLegacyLocalStorage.ts";
@@ -103,24 +101,13 @@ const layerDesktopEnvironment = Layer.unwrap(
   }),
 );
 
-const resolveDesktopSshCliRunner = (
-  environment: DesktopEnvironment.DesktopEnvironment["Service"],
-): RemoteT3RunnerOptions => {
-  const devRemoteEntryPath = Option.getOrUndefined(environment.devRemoteT3ServerEntryPath);
-  if (environment.isDevelopment && devRemoteEntryPath !== undefined) {
-    return {
-      nodeScriptPath: devRemoteEntryPath,
-      nodeEngineRange: serverPackageJson.engines.node,
-    };
-  }
-  return { archiveVersion: environment.appVersion };
-};
-
 const layerDesktopSshEnvironment = Layer.unwrap(
   Effect.gen(function* () {
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     return DesktopSshEnvironment.layer({
-      resolveCliRunner: Effect.succeed(resolveDesktopSshCliRunner(environment)),
+      resolveCliRunner: resolveDesktopSshCliRunner(environment).pipe(
+        Effect.provide(NodeServices.layer),
+      ),
     });
   }),
 );
