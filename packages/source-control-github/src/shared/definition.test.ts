@@ -91,6 +91,9 @@ describe("GitHub change request URLs", () => {
     expect(candidate("https://code.github.example.com/acme/web/issues/42")).toBe(
       "https://code.github.example.com/acme/web/pull/42",
     );
+    expect(candidate("https://github-dev.intuit.com/acme/web/issues/7")).toBe(
+      "https://github-dev.intuit.com/acme/web/pull/7",
+    );
     expect(candidate("https://github.com/pingdotgg/t3code/issues/not-a-number")).toBeNull();
     expect(candidate("https://code.example.test/acme/web/issues/42")).toBeNull();
   });
@@ -114,6 +117,21 @@ describe("GitHub remotes", () => {
     expect(recognize("https://github.example.com:8443/owner/repo.git")?.baseUrl).toBe(
       "https://github.example.com:8443",
     );
+  });
+
+  it("recognises the fork's Enterprise Server hosts, github.intuit.com and github-dev.intuit.com", () => {
+    expect(recognize("https://github-dev.intuit.com/owner/repo.git")).toEqual({
+      kind: "github",
+      name: "GitHub Self-Hosted",
+      baseUrl: "https://github-dev.intuit.com",
+    });
+    expect(recognize("git@github-dev.intuit.com:owner/repo.git")?.kind).toBe("github");
+    expect(recognize("https://github.intuit.com/owner/repo.git")).toEqual({
+      kind: "github",
+      name: "GitHub Self-Hosted",
+      baseUrl: "https://github.intuit.com",
+    });
+    expect(recognize("git@github.intuit.com:owner/repo.git")?.kind).toBe("github");
   });
 
   it("does not claim ghe.com itself or a label that only contains github", () => {

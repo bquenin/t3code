@@ -25,10 +25,16 @@ const ISSUE_PATH = /^\/([^/]+\/[^/]+)\/issues\/(\d+)(?:\/|$)/u;
 
 const KIND = SourceControlProviderKind.make("github");
 
+// Fork: the user's per-environment GitHub Enterprise Server, which no upstream rule matches.
+const GITHUB_DEV_HOST = "github-dev.intuit.com";
+
 function isGitHubHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
   return (
-    host === "github.com" || host.endsWith(".github.com") || host.split(".").includes("github")
+    host === "github.com" ||
+    host.endsWith(".github.com") ||
+    host.split(".").includes("github") ||
+    host === GITHUB_DEV_HOST
   );
 }
 
@@ -125,7 +131,8 @@ export const definition = defineSourceControl({
   recognizeRemote: ({ host, hostname }) =>
     hostname === "github.com" ||
     hostname.endsWith(".ghe.com") ||
-    hostname.split(".").includes("github")
+    hostname.split(".").includes("github") ||
+    hostname === GITHUB_DEV_HOST
       ? {
           kind: KIND,
           name: hostname === "github.com" ? "GitHub" : "GitHub Self-Hosted",

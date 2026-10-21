@@ -47,6 +47,16 @@ describe("sourceControlClients.parseChangeRequestUrl", () => {
     });
   });
 
+  it("routes the fork's Enterprise Server pull requests to GitHub", () => {
+    expect(parse("https://github-dev.intuit.com/acme/web/pull/7")).toEqual({
+      host: "github-dev.intuit.com",
+      repository: "acme/web",
+      number: 7,
+    });
+    expect(kindOf("https://github-dev.intuit.com/acme/web/pull/7")).toBe("github");
+    expect(kindOf("https://github.intuit.com/acme/web/pull/7")).toBe("github");
+  });
+
   it("reads a GitHub pull request on any host, so GitHub Enterprise works on its own name", () => {
     expect(parse("https://code.github.example.com/acme/web/pull/42")).toEqual({
       host: "code.github.example.com",
@@ -249,6 +259,13 @@ describe("sourceControlClients.recognizeRemote", () => {
     expect(kindOfRemote("https://bitbucket.gitlab.example/o/r")).toBe("gitlab");
     expect(kindOfRemote("https://bitbucket.visualstudio.com/p/_git/r")).toBe("azure-devops");
     expect(kindOfRemote("git@git.cafe:pingdotgg/t3code.git")).toBe("gitcafe");
+  });
+
+  it("recognises the fork's Enterprise Server remotes as GitHub", () => {
+    expect(kindOfRemote("https://github-dev.intuit.com/owner/repo.git")).toBe("github");
+    expect(kindOfRemote("git@github-dev.intuit.com:owner/repo.git")).toBe("github");
+    expect(kindOfRemote("https://github.intuit.com/owner/repo.git")).toBe("github");
+    expect(kindOfRemote("git@github.intuit.com:owner/repo.git")).toBe("github");
   });
 
   it("reads a remote no host claims as an unknown host, and a local path as no host", () => {
