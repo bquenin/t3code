@@ -864,6 +864,23 @@ layer("GitHubPullRequestApi.layer", (it) => {
           ),
         ),
       );
+      mockedStackMemberships.mockReturnValueOnce(
+        Effect.succeed(
+          output(
+            encodeJson({
+              data: {
+                _0_repository: {
+                  pullRequest: {
+                    stack: { number: 3, size: 2, baseRefName: "main" },
+                    stackEntry: { position: 1 },
+                  },
+                },
+                _1_repository: { pullRequest: { stack: null, stackEntry: null } },
+              },
+            }),
+          ),
+        ),
+      );
       const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
 
       const reads = yield* Effect.forEach(
@@ -903,6 +920,8 @@ layer("GitHubPullRequestApi.layer", (it) => {
         },
       );
       assert.strictEqual(eight?.headBranch, "feat/8");
+      assert.deepStrictEqual(seven?.stack, { number: 3, size: 2, base: "main", position: 1 });
+      assert.strictEqual(eight?.stack, null);
       expect(mockedExecute).toHaveBeenCalledOnce();
       expect(queryAt(0)).toContain(
         "_0_repository:repository(owner:$_0_owner name:$_0_name){pullRequest(number:$_0_number)",
@@ -911,9 +930,97 @@ layer("GitHubPullRequestApi.layer", (it) => {
         _0_owner: "acme",
         _0_name: "web",
         _0_number: 7,
-        _0_stacks: true,
         _1_number: 8,
       });
+      // Both stack memberships come from one read of their own.
+      expect(mockedStackMemberships).toHaveBeenCalledOnce();
+    }),
+  );
+
+  /** A batched summary read answering for pull request 7 alone. */
+  const summaryAnswer = (host: string) =>
+    output(
+      encodeJson({
+        data: {
+          _0_repository: {
+            pullRequest: {
+              number: 7,
+              title: "Pull request 7",
+              url: `https://${host}/acme/web/pull/7`,
+              author: null,
+              baseRefName: "main",
+              headRefName: "feat/7",
+              state: "OPEN",
+              isDraft: false,
+              mergeable: "MERGEABLE",
+              reviewDecision: null,
+              latestReviews: { nodes: [] },
+              additions: 1,
+              deletions: 1,
+              changedFiles: 1,
+              updatedAt: "2026-08-24T12:34:56.000Z",
+              mergedAt: null,
+              closedAt: null,
+              commits: { nodes: [] },
+            },
+          },
+        },
+      }),
+    );
+
+  it.effect("reads summaries on Enterprise Server without asking about stacks", () =>
+    Effect.gen(function* () {
+      mockedExecute.mockReturnValueOnce(Effect.succeed(summaryAnswer("github.acme.test")));
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+
+      const read = yield* cli
+        .getPullRequestSummary({
+          cwd: "/w",
+          repository: "acme/web",
+          host: "github.acme.test",
+          number: 7,
+        })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("10 millis");
+      const summary = yield* Fiber.join(read);
+
+      assert.strictEqual(summary.headBranch, "feat/7");
+      expect(summary).not.toHaveProperty("stack");
+      expect(mockedExecute).toHaveBeenCalledOnce();
+      expect(queryAt(0)).not.toMatch(/stack/i);
+      expect(mockedStackMemberships).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("keeps a summary whose stack membership could not be read", () =>
+    Effect.gen(function* () {
+      mockedExecute.mockReturnValueOnce(Effect.succeed(summaryAnswer("github.com")));
+      mockedStackMemberships.mockReturnValueOnce(
+        Effect.fail(
+          new GitHubRequestPolicy.GitHubApiResponseError({
+            host: "github.com",
+            operation: "getPullRequestSummary",
+            status: 502,
+          }),
+        ),
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+
+      const read = yield* cli
+        .getPullRequestSummary({
+          cwd: "/w",
+          repository: "acme/web",
+          host: "github.com",
+          number: 7,
+        })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("10 millis");
+      const summary = yield* Fiber.join(read);
+
+      assert.strictEqual(summary.headBranch, "feat/7");
+      // Not read rather than "in no stack", so the stored stack is looked up on its own.
+      expect(summary).not.toHaveProperty("stack");
+      expect(mockedStackMemberships).toHaveBeenCalledOnce();
     }),
   );
 
@@ -1267,6 +1374,65 @@ layer("GitHubPullRequestApi.layer", (it) => {
 
       assert.strictEqual(failure._tag, "GitHubRepositorySelectorError");
       assert.strictEqual(mockedExecute.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("badges searched rows with their stacks from a read of their own, on github.com", () =>
+    Effect.gen(function* () {
+      mockedExecute.mockReturnValue(
+        Effect.succeed(
+          searchPage([
+            searchItem(7, "acme/web", "2026-07-03T00:00:00Z"),
+            searchItem(9, "pingdotgg/t3code", "2026-07-02T00:00:00Z"),
+          ]),
+        ),
+      );
+      mockedStackMemberships.mockReturnValueOnce(
+        Effect.succeed(
+          output(
+            encodeJson({
+              data: {
+                _0_repository: {
+                  pullRequest: {
+                    stack: { number: 3, size: 2, baseRefName: "main" },
+                    stackEntry: { position: 1 },
+                  },
+                },
+                _1_repository: { pullRequest: { stack: null, stackEntry: null } },
+              },
+            }),
+          ),
+        ),
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      const input = {
+        cwd: "/w",
+        repositories: ["acme/web", "pingdotgg/t3code"],
+        state: "open" as const,
+        involvement: "all" as const,
+        viewer: "bilal",
+        limit: 10,
+      };
+
+      const hosted = yield* cli.searchPullRequests({ ...input, host: "github.com" });
+      expect(hosted.items[0]?.stack).toEqual({ number: 3, size: 2, base: "main", position: 1 });
+      expect(hosted.items[1]?.stack).toBeUndefined();
+      expect(mockedStackMemberships).toHaveBeenCalledOnce();
+      const membership = mockedStackMemberships.mock.calls[0]?.[0];
+      expect(membership?.kind === "graphql" ? membership.variables : {}).toMatchObject({
+        _0_owner: "acme",
+        _0_name: "web",
+        _0_number: 7,
+        _1_owner: "pingdotgg",
+        _1_name: "t3code",
+        _1_number: 9,
+      });
+
+      const enterprise = yield* cli.searchPullRequests({ ...input, host: "github.acme.test" });
+      expect(enterprise.items.map((item) => item.stack)).toEqual([undefined, undefined]);
+      expect(mockedStackMemberships).toHaveBeenCalledOnce();
+      expect(queryAt(0)).not.toMatch(/stack/i);
+      expect(queryAt(1)).not.toMatch(/stack/i);
     }),
   );
 

@@ -911,7 +911,6 @@ function toRow(
   const decodedNode = decodeRow(entry);
   if (!Exit.isSuccess(decodedNode)) return null;
   const node = decodedNode.value;
-  const stack = toStackMembership(node);
   const reviewRequests = nodesOf(node.reviewRequests).flatMap(
     (request): ReadonlyArray<ReviewRequestFields> => {
       const reviewer = request.requestedReviewer;
@@ -923,18 +922,15 @@ function toRow(
     },
   );
   return {
-    item: {
-      ...toListItem({
-        ...node,
-        latestReviews: nodesOf(node.latestReviews),
-        reviewRequests,
-        labels: nodesOf(node.labels),
-        // The rollup arrives as one enum. Dressed as a single check here so it is read the same
-        // way the detail's checks are.
-        statusCheckRollup: rollupStates(node.commits),
-      }),
-      ...(stack === undefined ? {} : { stack }),
-    },
+    item: toListItem({
+      ...node,
+      latestReviews: nodesOf(node.latestReviews),
+      reviewRequests,
+      labels: nodesOf(node.labels),
+      // The rollup arrives as one enum. Dressed as a single check here so it is read the same
+      // way the detail's checks are.
+      statusCheckRollup: rollupStates(node.commits),
+    }),
     repository: trimmed(node.repository.nameWithOwner),
   };
 }
@@ -1010,12 +1006,18 @@ export interface GitHubPullRequestSummary {
   readonly reviewDecision: PullRequestReviewDecision | null;
   readonly checksState: PullRequestChecksState | null;
   readonly mergeability: PullRequestMergeability;
-  /** Null when GitHub says the pull request is in no stack; absent when the read did not ask. */
+  /** Null when GitHub says the pull request is in no stack; absent when it was not read. */
   readonly stack?: PullRequestStackMembership | null;
 }
 
-/** The summary a linked thread keeps current, from one slice of the batched read. */
-export function toPullRequestSummary(pr: SummarizedPullRequest): GitHubPullRequestSummary {
+/**
+ * The summary a linked thread keeps current, from one slice of the batched read, with the stack
+ * membership read beside it where there was one.
+ */
+export function toPullRequestSummary(
+  pr: SummarizedPullRequest,
+  membership?: Parameters<typeof toStackMembership>[0],
+): GitHubPullRequestSummary {
   return {
     number: pr.number,
     title: pr.title,
@@ -1035,7 +1037,7 @@ export function toPullRequestSummary(pr: SummarizedPullRequest): GitHubPullReque
     // One enum for the head commit, dressed as a single check like the search row's.
     checksState: rollupChecksState(rollupStates(pr.commits)),
     mergeability: toMergeability(pr.mergeable),
-    ...(pr.stack === undefined ? {} : { stack: toStackMembership(pr) ?? null }),
+    ...(membership === undefined ? {} : { stack: toStackMembership(membership) ?? null }),
   };
 }
 
