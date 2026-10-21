@@ -416,15 +416,6 @@ describe("pull request search decoding", () => {
     });
   }
 
-  it("keeps stack membership beside search results without extra per-PR reads", () => {
-    const raw = JSON.parse(searchJson(["SUCCESS", null]));
-    raw.data.search.nodes[0].stack = { number: 3, size: 2, baseRefName: "main" };
-    raw.data.search.nodes[0].stackEntry = { position: 1 };
-    const batch = expectSuccess(decodePullRequestSearchJson(JSON.stringify(raw)));
-    expect(batch.items[0]?.stack).toEqual({ number: 3, size: 2, position: 1, base: "main" });
-    expect(batch.items[1]?.stack).toBeUndefined();
-  });
-
   it("maps the rollup enum the search answers with onto the same three words", () => {
     const batch = expectSuccess(
       decodePullRequestSearchJson(
@@ -2284,23 +2275,19 @@ describe("batched pull request summaries", () => {
       mergeability: "unknown",
       additions: 0,
     });
-    // The read did not ask about stacks, so the summary does not claim an answer.
+    // Stack membership was not read, so the summary does not claim an answer.
     expect(mapped).not.toHaveProperty("stack");
   });
 
-  it("reads stack membership only where the read asked for it", () => {
+  it("reads stack membership only where it was read", () => {
     expect(
-      toPullRequestSummary(decodeSummary(summary({ stack: null, stackEntry: null }))).stack,
+      toPullRequestSummary(decodeSummary(summary({})), { stack: null, stackEntry: null }).stack,
     ).toBeNull();
     expect(
-      toPullRequestSummary(
-        decodeSummary(
-          summary({
-            stack: { number: 3, size: 2, baseRefName: "main" },
-            stackEntry: { position: 2 },
-          }),
-        ),
-      ).stack,
+      toPullRequestSummary(decodeSummary(summary({})), {
+        stack: { number: 3, size: 2, baseRefName: "main" },
+        stackEntry: { position: 2 },
+      }).stack,
     ).toEqual({ number: 3, size: 2, base: "main", position: 2 });
   });
 });
