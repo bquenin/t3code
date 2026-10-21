@@ -52,13 +52,17 @@ const ACP_REGISTRY_URL = "https://cdn.agentclientprotocol.com/registry/v1/latest
  * Local patch: `cursor-agent acp` offers one fixed variant per model unless the
  * client asks for the parameterized picker, which splits a model into a base id
  * plus separate reasoning effort, context, and fast options. The pre-SDK Cursor
- * driver sent the same flag. Used by both the probe and the session adapter so
- * the advertised models match what a session accepts.
+ * driver sent the same flag. Used by the probe, the management runtime, and the
+ * session adapter so the advertised models match what a session accepts. A
+ * local command keeps the form's stale agentId, which the adapter ignores, so
+ * only the registry source counts.
  */
 export function acpRegistryClientCapabilitiesMeta(
-  agentId: string,
+  settings: Pick<AcpRegistrySettings, "source" | "agentId">,
 ): Record<string, boolean> | undefined {
-  return agentId === "cursor" ? { parameterizedModelPicker: true } : undefined;
+  return settings.source === "registry" && settings.agentId === "cursor"
+    ? { parameterizedModelPicker: true }
+    : undefined;
 }
 
 /**

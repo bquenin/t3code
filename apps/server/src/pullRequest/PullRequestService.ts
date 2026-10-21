@@ -776,9 +776,8 @@ export const make = Effect.gen(function* () {
       if (Option.isNone(project)) return null;
       const key = normalizeThreadPullRequestKey({ ...ref, host: ref.host });
       // Links live on thread shells; archived threads keep theirs, so search both.
-      const snapshot = yield* threadProjections.getShellSnapshot();
+      const snapshot = yield* threadProjections.getShellSnapshot({ projectId: project.value.id });
       const links = [...snapshot.threads, ...snapshot.archivedThreads]
-        .filter((thread) => thread.projectId === project.value.id)
         .flatMap((thread) => thread.pullRequests ?? [])
         .filter((link) => threadPullRequestKeysEqual(link, key));
       for (const link of links) {

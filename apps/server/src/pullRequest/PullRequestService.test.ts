@@ -556,9 +556,12 @@ function makeService(input: {
         ),
         Layer.mock(ProjectionStoreV2.ProjectionStoreV2)({
           // One thread per saved link; the store already leaves deleted threads out.
-          getShellSnapshot: () => {
+          getShellSnapshot: (options) => {
             const shells = (input.linkedPullRequests ?? [])
               .filter((link) => !link.deleted)
+              .filter(
+                (link) => options?.projectId === undefined || link.projectId === options.projectId,
+              )
               .map(
                 ({ projectId, archived, deleted: _deleted, ...link }) =>
                   ({

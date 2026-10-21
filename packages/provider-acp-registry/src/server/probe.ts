@@ -334,7 +334,7 @@ export const probeAcpRegistryConfiguration = Effect.fn("AcpRegistryProbe.probeCo
             elicitation: { url: {} },
             fs: { readTextFile: false, writeTextFile: false },
             terminal: false,
-            ...withClientCapabilitiesMeta(input.settings.agentId),
+            ...withClientCapabilitiesMeta(input.settings),
           },
           clientInfo: { name: "t3-code-provider-test", version: "0.0.0" },
           authenticateOnAuthRequired: false,
@@ -448,8 +448,8 @@ export const probeAcpRegistryConfiguration = Effect.fn("AcpRegistryProbe.probeCo
 
 const MANAGEMENT_TIMEOUT = Duration.seconds(60);
 
-function withClientCapabilitiesMeta(agentId: string) {
-  const meta = AcpRegistrySupport.acpRegistryClientCapabilitiesMeta(agentId);
+function withClientCapabilitiesMeta(settings: AcpRegistrySettings) {
+  const meta = AcpRegistrySupport.acpRegistryClientCapabilitiesMeta(settings);
   return meta === undefined ? {} : { _meta: meta };
 }
 
@@ -473,7 +473,7 @@ const makeAcpRegistryManagementRuntime = Effect.fn("AcpRegistryProbe.makeManagem
           elicitation: { url: {} },
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
-          ...withClientCapabilitiesMeta(input.settings.agentId),
+          ...withClientCapabilitiesMeta(input.settings),
         },
         clientInfo: { name: "t3-code-session-manager", version: "0.0.0" },
         authenticateOnAuthRequired: false,

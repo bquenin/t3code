@@ -156,6 +156,19 @@ describe("AcpRegistrySupport", () => {
     });
   });
 
+  it("asks only the registry Cursor agent for the parameterized model picker", () => {
+    const meta = (settings: Partial<AcpRegistrySettings>) =>
+      AcpRegistrySupport.acpRegistryClientCapabilitiesMeta(
+        Schema.decodeSync(AcpRegistrySettings)(settings),
+      );
+    expect(meta({ agentId: "cursor" })).toEqual({ parameterizedModelPicker: true });
+    // Switching to a local command keeps the form's agentId, which the session adapter ignores.
+    expect(
+      meta({ source: "local", agentId: "cursor", commandPath: "/usr/local/bin/cursor-agent" }),
+    ).toBeUndefined();
+    expect(meta({ agentId: "mock-agent" })).toBeUndefined();
+  });
+
   it("reduces Cursor's combined model ids to the base model", () => {
     expect(
       AcpRegistrySupport.resolveAcpRegistryCursorModelId(

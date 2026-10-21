@@ -185,8 +185,9 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
       /^copilot(\.exe|\.cmd)?$/i.test(options.settings.commandPath.split(/[\\/]/).pop() ?? ""));
   const copilotRouting = isCopilot ? makeCopilotSubagentRouting() : undefined;
   // Local patch: Cursor's parameterized model picker (see acpRegistryClientCapabilitiesMeta).
-  const cursorCapabilitiesMeta =
-    AcpRegistrySupport.acpRegistryClientCapabilitiesMeta(registryAgentId);
+  const cursorCapabilitiesMeta = AcpRegistrySupport.acpRegistryClientCapabilitiesMeta(
+    options.settings,
+  );
   const flavor: AcpAdapterV2Flavor = {
     driver: ACP_REGISTRY_PROVIDER,
     capabilities: AcpProviderCapabilitiesV2,
