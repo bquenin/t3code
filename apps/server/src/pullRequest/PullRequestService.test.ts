@@ -2778,6 +2778,7 @@ it.effect("refuses Azure cross-organization reads and writes without its checkou
 
 it.effect.each([
   ["github.com", "github"],
+  ["github.acme.com", "github"],
   ["bitbucket.org", "bitbucket"],
   ["codeberg.org", "forgejo"],
 ] as const)("reads linked PR summaries and stacks on %s without a checkout", ([host, kind]) =>
