@@ -23,7 +23,13 @@ import {
 } from "../diffPanelStore";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { readProject, readProjects, readThreadShell, useProjects } from "../state/entities";
+import {
+  readProject,
+  readProjects,
+  readThreadShell,
+  readThreadShells,
+  useProjects,
+} from "../state/entities";
 import { environmentServerConfigsAtom, serverEnvironment } from "../state/server";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { reviewEnvironment } from "../state/review";
@@ -87,6 +93,11 @@ export function useOpenChangeRequestLink(
         environmentId: resolvedThreadRef?.environmentId ?? targetEnvironmentId,
         primaryEnvironmentId,
         lendHostProject: resolvedPanelRef !== undefined,
+        linkedThreads: () =>
+          resolvedThreadRef ? [readThreadShell(resolvedThreadRef)] : readThreadShells(),
+        readsWithoutCheckout: (environmentId) =>
+          serverConfigs.get(environmentId)?.environment.capabilities.pullRequestsWithoutCheckout ===
+          true,
       });
       if (target === null) return false;
       const { project, repository, number, host } = target;

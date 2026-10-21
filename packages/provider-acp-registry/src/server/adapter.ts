@@ -209,6 +209,10 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
       }
     : options;
   const copilotRouting = isCopilot ? makeCopilotSubagentRouting() : undefined;
+  // Local patch: Cursor's parameterized model picker (see acpRegistryClientCapabilitiesMeta).
+  const cursorCapabilitiesMeta = AcpRegistrySupport.acpRegistryClientCapabilitiesMeta(
+    options.settings,
+  );
   const flavor: AcpAdapterV2Flavor = {
     driver: ACP_REGISTRY_PROVIDER,
     // Cancelling a Copilot prompt also kills the background agents it started.
@@ -257,6 +261,13 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
           normalizeSessionUpdate: copilotRouting.normalizeSessionUpdate,
           extractSubagentUpdate: extractCopilotSubagentUpdate,
           restartRuntimeAfterPromptError: isCopilotLostSessionError,
+        }),
+    ...(cursorCapabilitiesMeta === undefined
+      ? {}
+      : {
+          clientCapabilitiesMeta: cursorCapabilitiesMeta,
+          resolveModelId: (selection) =>
+            AcpRegistrySupport.resolveAcpRegistryCursorModelId(selection.model),
         }),
     makeRuntime: options.makeRuntime ?? makeAcpRegistryRuntime(runtimeOptions, catalog),
     ...(runtimeCoordinator === undefined

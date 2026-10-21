@@ -3,10 +3,12 @@ import type {
   ProjectId,
   PullRequestRef,
   RepositoryIdentity,
+  ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import type { ChangeRequestLink } from "@t3tools/source-control-core/shared/definition";
 
 import { sourceControlClients } from "./sourceControlClients.ts";
+import { threadPullRequestKeysEqual, visibleThreadPullRequests } from "./threadPullRequests.ts";
 
 interface ChangeRequestProject {
   readonly id: ProjectId;
@@ -45,6 +47,35 @@ export function findProjectOnChangeRequestHost<Project extends ChangeRequestProj
   );
 }
 
+/** A thread whose saved change request links can open under its project. */
+export interface ChangeRequestLinkThread {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly pullRequests: ReadonlyArray<ThreadPullRequestLink>;
+}
+
+/** A saved thread link can be read even when its project is a parent folder of the checkout. */
+export function findProjectForLinkedChangeRequest<Project extends ChangeRequestProject>(
+  projects: ReadonlyArray<Project>,
+  url: string,
+  thread: ChangeRequestLinkThread | null,
+): Project | undefined {
+  if (thread === null) return undefined;
+  const parsed = sourceControlClients.parseChangeRequestUrl(url);
+  // Azure derives its organization and project from a checkout, even for an explicit URL.
+  if (parsed === null || parsed.definition.kind === "azure-devops") return undefined;
+  if (
+    !visibleThreadPullRequests(thread.pullRequests).some((saved) =>
+      threadPullRequestKeysEqual(saved, parsed.link),
+    )
+  ) {
+    return undefined;
+  }
+  return projects.find(
+    (project) => project.environmentId === thread.environmentId && project.id === thread.projectId,
+  );
+}
+
 /**
  * Where every client opens a change request link in the app, or null for the browser. A link
  * opened into a pull request view may borrow any project on its host, so a mirror's or a
@@ -58,6 +89,8 @@ export function resolveChangeRequestLinkTarget<Project extends ChangeRequestProj
   projectId,
   primaryEnvironmentId,
   lendHostProject,
+  linkedThreads,
+  readsWithoutCheckout,
 }: {
   url: string;
   projects: ReadonlyArray<Project>;
@@ -68,6 +101,10 @@ export function resolveChangeRequestLinkTarget<Project extends ChangeRequestProj
   projectId?: ProjectId | undefined;
   primaryEnvironmentId?: EnvironmentId | null | undefined;
   lendHostProject: boolean;
+  /** Threads whose saved links open under their project without its checkout. */
+  linkedThreads?: (() => ReadonlyArray<ChangeRequestLinkThread | null>) | undefined;
+  /** Environments that read saved thread links without a checkout at the project root. */
+  readsWithoutCheckout?: ((environmentId: EnvironmentId) => boolean) | undefined;
 }): {
   readonly project: Project;
   readonly repository: string;
@@ -87,9 +124,21 @@ export function resolveChangeRequestLinkTarget<Project extends ChangeRequestProj
       Number(right.environmentId === primaryEnvironmentId) -
         Number(left.environmentId === primaryEnvironmentId),
   );
+  const findLinkedProject = () => {
+    if (linkedThreads === undefined || readsWithoutCheckout === undefined) return undefined;
+    const supported = candidates.filter((candidate) =>
+      readsWithoutCheckout(candidate.environmentId),
+    );
+    if (supported.length === 0) return undefined;
+    const linked = new Set(
+      linkedThreads().map((thread) => findProjectForLinkedChangeRequest(supported, url, thread)),
+    );
+    return supported.find((project) => linked.has(project));
+  };
   const project =
     findProjectForChangeRequest(candidates, link) ??
-    (lendHostProject ? findProjectOnChangeRequestHost(candidates, link) : undefined);
+    (lendHostProject ? findProjectOnChangeRequestHost(candidates, link) : undefined) ??
+    findLinkedProject();
   if (project === undefined || !configLoaded(project.environmentId)) return null;
   return {
     project,
