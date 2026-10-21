@@ -26,7 +26,13 @@ import {
 } from "../diffPanelStore";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { readProject, readProjects, readThreadShell, useProjects } from "../state/entities";
+import {
+  readProject,
+  readProjects,
+  readThreadShell,
+  readThreadShells,
+  useProjects,
+} from "../state/entities";
 import { environmentServerConfigsAtom, serverEnvironment } from "../state/server";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { reviewEnvironment } from "../state/review";
@@ -49,6 +55,8 @@ export function pullRequestLinkPanelTarget(input: {
   readonly environmentId: EnvironmentId | undefined;
   readonly primaryEnvironmentId: EnvironmentId | null;
   readonly lendHostProject: boolean;
+  /** Fork: threads whose linked pull requests route a link with no checkout of its repository. */
+  readonly linkedThreads?: Parameters<typeof resolveChangeRequestLinkTarget>[0]["linkedThreads"];
 }) {
   // Read at click time: every provider status push replaces the config map, and
   // subscribing would hand every rendered link a new handler. Projects likewise, so a
@@ -61,6 +69,10 @@ export function pullRequestLinkPanelTarget(input: {
     environmentId: input.environmentId,
     primaryEnvironmentId: input.primaryEnvironmentId,
     lendHostProject: input.lendHostProject,
+    linkedThreads: input.linkedThreads,
+    readsWithoutCheckout: (environmentId) =>
+      serverConfigs.get(environmentId)?.environment.capabilities.pullRequestsWithoutCheckout ===
+      true,
   });
 }
 
@@ -105,6 +117,8 @@ export function useOpenChangeRequestLink(
         environmentId: resolvedThreadRef?.environmentId ?? targetEnvironmentId,
         primaryEnvironmentId,
         lendHostProject: resolvedPanelRef !== undefined,
+        linkedThreads: () =>
+          resolvedThreadRef ? [readThreadShell(resolvedThreadRef)] : readThreadShells(),
       });
       if (target === null) return false;
       const { project, repository, number, host } = target;

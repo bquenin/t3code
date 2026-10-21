@@ -52,6 +52,7 @@ import {
   SshPasswordPromptError,
   SshReadinessError,
 } from "./errors.ts";
+import { ensureRemoteSourceBundle, type SshSourceBundle } from "./sourceBundle.ts";
 
 const DEFAULT_REMOTE_PORT = 3773;
 const REMOTE_PORT_SCAN_WINDOW = 200;
@@ -108,6 +109,8 @@ const REMOTE_LAUNCH_TIMEOUT_MS =
   REMOTE_LAUNCH_BASE_TIMEOUT_MS;
 
 export interface RemoteT3RunnerOptions {
+  /** Server built with the desktop app, uploaded instead of downloading a release. */
+  readonly sourceBundle?: SshSourceBundle;
   readonly nodeScriptPath?: string | null;
   readonly nodeEngineRange?: string | null;
   readonly archiveVersion?: string | null;
@@ -115,7 +118,7 @@ export interface RemoteT3RunnerOptions {
 }
 
 export interface SshEnvironmentManagerOptions {
-  readonly resolveCliRunner?: Effect.Effect<RemoteT3RunnerOptions>;
+  readonly resolveCliRunner?: Effect.Effect<RemoteT3RunnerOptions, SshLaunchError>;
   // Identifies this install to the remote across edits of a connection; null when unknown.
   readonly resolveLauncherId?: Effect.Effect<string | null>;
 }
@@ -1232,6 +1235,17 @@ export const launchOrReuseRemoteServer = Effect.fn("ssh/tunnel.launchOrReuseRemo
     ChildProcessSpawner.ChildProcessSpawner | Digest.Digest | FileSystem.FileSystem | Path.Path
   > {
     const stateKey = yield* remoteStateKey(target);
+    if (runner?.sourceBundle !== undefined) {
+      runner = {
+        ...runner,
+        nodeScriptPath: yield* ensureRemoteSourceBundle(
+          target,
+          runner.sourceBundle,
+          buildRemoteNodeEnvScript(runner),
+          input,
+        ),
+      };
+    }
     // The launcher ID is interpolated into the remote shell command, so only hex passes.
     const launchArgs =
       typeof launcherId === "string" && /^[0-9a-f]{32}$/u.test(launcherId)
@@ -1295,10 +1309,21 @@ export const issueRemotePairingToken = Effect.fn("ssh/tunnel.issueRemotePairingT
   {
     readonly credential: string;
   },
-  SshCommandError | SshInvalidTargetError | SshPairingError,
+  SshCommandError | SshInvalidTargetError | SshPairingError | SshLaunchError,
   ChildProcessSpawner.ChildProcessSpawner | Digest.Digest | FileSystem.FileSystem | Path.Path
 > {
   const stateKey = yield* remoteStateKey(target);
+  if (runner?.sourceBundle !== undefined) {
+    runner = {
+      ...runner,
+      nodeScriptPath: yield* ensureRemoteSourceBundle(
+        target,
+        runner.sourceBundle,
+        buildRemoteNodeEnvScript(runner),
+        input,
+      ),
+    };
+  }
   yield* Effect.logDebug("ssh.remoteServer.pairingToken.start", {
     ...sshTargetLogFields(target),
     stateKey,

@@ -137,7 +137,6 @@ afterEach(() => {
 
 describe("concurrent thread action Undo", () => {
   it.each([
-    ["settleThread", "settle", "unsettle", "Settled"],
     ["snoozeThread", "snooze", "unsnooze", "Snoozed"],
     ["unpinThread", "unpin", "pin", "Unpinned"],
     ["archiveThread", "archive", "unarchive", "Archived"],
@@ -288,75 +287,14 @@ describe("delete navigation", () => {
 });
 
 describe("settle and snooze Undo", () => {
-  it("un-settles from the notice and expires the Undo after a manual un-settle", async () => {
+  // Local patch: settling shows no "Settled" Undo notice or toast.
+  it("settles without offering an Undo", async () => {
     const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
     const actions = useThreadActions();
     await actions.settleThread(target);
-    expect(useThreadUndoNotice.getState().notice).toMatchObject({ action: "Settled", count: 1 });
+    expect(commands.settle).toHaveBeenCalledOnce();
+    expect(useThreadUndoNotice.getState().notice?.action).not.toBe("Settled");
     expect(add).not.toHaveBeenCalled();
-    const undo = currentUndo();
-    await actions.unsettleThread(target);
-    await undo();
-    expect(commands.unsettle).toHaveBeenCalledOnce();
-  });
-
-  it("re-pins and re-snoozes a thread that settling had cleared", async () => {
-    const snoozedUntil = "2030-01-01T09:00:00.000Z";
-    threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
-    threadShell.snoozedUntil = snoozedUntil;
-    const actions = useThreadActions();
-    await actions.settleThread(target);
-    await currentUndo()();
-    expect(commands.unsettle).toHaveBeenCalledOnce();
-    expect(commands.pin).toHaveBeenCalledExactlyOnceWith({
-      environmentId: target.environmentId,
-      input: { threadId: target.threadId, orderKey: "a0" },
-    });
-    expect(commands.snooze).toHaveBeenCalledExactlyOnceWith({
-      environmentId: target.environmentId,
-      input: { threadId: target.threadId, snoozedUntil },
-    });
-  });
-
-  it("puts a manually ordered thread back in its active position", async () => {
-    threadShell.activeOrderKey = "b5";
-    await useThreadActions().settleThread(target);
-    await currentUndo()();
-    expect(commands.unsettle).toHaveBeenCalledOnce();
-    expect(commands.reorderActive).toHaveBeenCalledExactlyOnceWith({
-      environmentId: target.environmentId,
-      input: { threadId: target.threadId, orderKey: "b5" },
-    });
-    expect(commands.unsettle.mock.invocationCallOrder[0]).toBeLessThan(
-      commands.reorderActive.mock.invocationCallOrder[0]!,
-    );
-  });
-
-  it("puts an automatically ordered thread back at its Active anchor", async () => {
-    threadShell.unsettledAt = "2026-01-02T00:00:00.000Z";
-    await useThreadActions().settleThread(target);
-    await currentUndo()();
-    expect(commands.unsettle).toHaveBeenCalledExactlyOnceWith({
-      environmentId: target.environmentId,
-      input: {
-        threadId: target.threadId,
-        reason: "user",
-        restoreUnsettledAt: "2026-01-02T00:00:00.000Z",
-      },
-    });
-    expect(commands.reorderActive).not.toHaveBeenCalled();
-  });
-
-  it("stops settle restoration if restoring the pin fails", async () => {
-    threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
-    threadShell.snoozedUntil = "2030-01-01T09:00:00.000Z";
-    commands.pin.mockResolvedValue({ _tag: "Failure", cause: Cause.fail(new Error("Pin failed")) });
-    vi.spyOn(toastManager, "add").mockReturnValue("toast");
-    await useThreadActions().settleThread(target);
-    await currentUndo()();
-    expect(commands.unsettle).toHaveBeenCalledOnce();
-    expect(commands.pin).toHaveBeenCalledOnce();
-    expect(commands.snooze).not.toHaveBeenCalled();
   });
 
   it("expires an older unpin Undo when the thread is settled", async () => {
@@ -393,7 +331,6 @@ describe("archive and delete Undo expiry", () => {
 
   describe.each(["archiveThread", "deleteThread"] as const)("%s", (lifecycle) => {
     it.each([
-      ["settleThread", "unsettle"],
       ["snoozeThread", "unsnooze"],
       ["unpinThread", "pin"],
     ] as const)(
@@ -421,12 +358,12 @@ describe("archive and delete Undo expiry", () => {
 
     it("keeps the earlier Undo when the request fails", async () => {
       const actions = useThreadActions();
-      await actions.settleThread(target);
+      await actions.snoozeThread(target, "2099-01-01T09:00:00.000Z");
       commands[lifecycle === "archiveThread" ? "archive" : "delete"].mockResolvedValue(failure);
       await actions[lifecycle](target);
-      expect(useThreadUndoNotice.getState().notice).toMatchObject({ action: "Settled" });
+      expect(useThreadUndoNotice.getState().notice).toMatchObject({ action: "Snoozed" });
       await currentUndo()();
-      expect(commands.unsettle).toHaveBeenCalledOnce();
+      expect(commands.unsnooze).toHaveBeenCalledOnce();
     });
   });
 

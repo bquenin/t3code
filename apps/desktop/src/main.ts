@@ -62,6 +62,7 @@ import * as DesktopPreReadyFileSystem from "./app/DesktopPreReadyFileSystem.ts";
 import * as DesktopPreReadyPlatform from "./app/DesktopPreReadyPlatform.ts";
 import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
 import * as DesktopSshEnvironment from "./ssh/DesktopSshEnvironment.ts";
+import { resolveDesktopSshCliRunner } from "./ssh/DesktopSshCliRunner.ts";
 import * as DesktopSshPasswordPrompts from "./ssh/DesktopSshPasswordPrompts.ts";
 import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopLegacyLocalStorage from "./app/DesktopLegacyLocalStorage.ts";
@@ -114,9 +115,15 @@ const layerDesktopSshEnvironment = Layer.unwrap(
     const env = yield* HostProcess.Environment;
     return DesktopSshEnvironment.layer({
       // Per connect: the login shell's environment is installed after this layer is built.
-      resolveCliRunner: Effect.sync(() =>
-        DesktopSshEnvironment.resolveDesktopSshCliRunner(environment, env),
-      ),
+      // Fork: upload the server built with this app when it has one; otherwise upstream's runner.
+      resolveCliRunner: Effect.suspend(() => {
+        const upstream = DesktopSshEnvironment.resolveDesktopSshCliRunner(environment, env);
+        if (upstream.nodeScriptPath) return Effect.succeed(upstream);
+        return resolveDesktopSshCliRunner(environment).pipe(
+          Effect.map((runner) => (runner.sourceBundle ? runner : upstream)),
+          Effect.provide(NodeServices.layer),
+        );
+      }),
       resolveLauncherId: yield* Effect.cached(
         DesktopSshEnvironment.readOrCreateLauncherId(
           environment.path.join(environment.stateDir, "ssh-launcher-id"),

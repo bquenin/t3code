@@ -262,6 +262,10 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
   // the unquoted "T3 Code (Beta).exe" path). Both take T3's MCP endpoint over ACP HTTP.
   const useHttpMcpServers =
     copilotRouting !== undefined || prefersHttpMcpTransport(options.settings);
+  // Local patch: Cursor's parameterized model picker (see acpRegistryClientCapabilitiesMeta).
+  const cursorCapabilitiesMeta = AcpRegistrySupport.acpRegistryClientCapabilitiesMeta(
+    options.settings,
+  );
   const flavor: AcpAdapterV2Flavor = {
     driver: ACP_REGISTRY_PROVIDER,
     // Cancelling a Copilot prompt also kills the background agents it started.
@@ -343,6 +347,13 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
           alwaysSetModel: true,
         }),
     mcpOverHttp: useHttpMcpServers,
+    ...(cursorCapabilitiesMeta === undefined
+      ? {}
+      : {
+          clientCapabilitiesMeta: cursorCapabilitiesMeta,
+          resolveModelId: (selection) =>
+            AcpRegistrySupport.resolveAcpRegistryCursorModelId(selection.model),
+        }),
     makeRuntime: options.makeRuntime ?? makeAcpRegistryRuntime(runtimeOptions, catalog),
     ...(runtimeCoordinator === undefined
       ? {}
