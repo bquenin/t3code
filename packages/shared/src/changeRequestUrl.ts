@@ -1,4 +1,8 @@
-import type { RepositoryIdentity, ThreadLinkedPullRequest } from "@t3tools/contracts";
+import {
+  SourceControlProviderKind,
+  type RepositoryIdentity,
+  type ThreadLinkedPullRequest,
+} from "@t3tools/contracts";
 import { canonicalRepositoryKey } from "./sourceControl.ts";
 
 /**
@@ -60,6 +64,18 @@ function claim(host: string, match: RegExpExecArray | null): ChangeRequestLink |
   return repository && Number.isSafeInteger(number) && number > 0
     ? { host, repository: repository.toLowerCase(), number }
     : null;
+}
+
+/** The provider named by a recognised PR URL, including self-hosted URL shapes. */
+export function changeRequestProviderKind(targetUrl: string): SourceControlProviderKind | null {
+  const link = parseChangeRequestUrl(targetUrl);
+  if (link === null) return null;
+  const route = new URL(targetUrl).pathname.slice(link.repository.length + 1);
+  if (route.startsWith("/-/merge_requests/")) return SourceControlProviderKind.make("gitlab");
+  if (route.startsWith("/pulls/")) return SourceControlProviderKind.make("forgejo");
+  if (route.startsWith("/pull-requests/")) return SourceControlProviderKind.make("bitbucket");
+  if (route.startsWith("/pullrequest/")) return SourceControlProviderKind.make("azure-devops");
+  return route.startsWith("/pull/") ? SourceControlProviderKind.make("github") : null;
 }
 
 export function changeRequestUrlFor(

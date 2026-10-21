@@ -45,6 +45,7 @@ import {
   SshPasswordPromptError,
   SshReadinessError,
 } from "./errors.ts";
+import { ensureRemoteSourceBundle, type SshSourceBundle } from "./sourceBundle.ts";
 
 const DEFAULT_REMOTE_PORT = 3773;
 const REMOTE_PORT_SCAN_WINDOW = 200;
@@ -66,6 +67,8 @@ const REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS = 900_000;
 const REMOTE_REUSE_READY_TIMEOUT_MS = 2_000;
 
 export interface RemoteT3RunnerOptions {
+  /** Server built with the desktop app, uploaded instead of downloading a release. */
+  readonly sourceBundle?: SshSourceBundle;
   readonly nodeScriptPath?: string | null;
   readonly nodeEngineRange?: string | null;
   readonly archiveVersion?: string | null;
@@ -73,7 +76,7 @@ export interface RemoteT3RunnerOptions {
 }
 
 export interface SshEnvironmentManagerOptions {
-  readonly resolveCliRunner?: Effect.Effect<RemoteT3RunnerOptions>;
+  readonly resolveCliRunner?: Effect.Effect<RemoteT3RunnerOptions, SshLaunchError>;
 }
 
 interface SshTunnelEntry {
@@ -643,10 +646,49 @@ try {
 }
 NODE
 }
+# Prints "<pid> <port>" for a live server on this T3 home other than $1, read
+# from its own command line, so it is found even before it writes its runtime file.
+find_home_server() {
+  ps -eo pid=,args= 2>/dev/null | awk -v home="$DEFAULT_SERVER_HOME" -v skip="$1" '
+    $1 != skip && index($0 " ", " serve ") && index($0 " ", " --base-dir " home " ") {
+      n = split($0, parts, " ")
+      for (i = 2; i < n; i++) if (parts[i] == "--port") { print $1, parts[i + 1]; exit }
+    }' || true
+}
 REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 REMOTE_PORT="$(cat "$PORT_FILE" 2>/dev/null || true)"
 REMOTE_MANAGED="$(cat "$MANAGED_FILE" 2>/dev/null || true)"
-DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port 2>/dev/null || true)"
+OWN_MANAGED_PID=""
+if [ "$REMOTE_MANAGED" = "managed" ]; then
+  OWN_MANAGED_PID="$REMOTE_PID"
+fi
+# Another server already owns this home and its database, for example one kept
+# alive by a supervisor. Give it the full startup window and attach to it: a
+# second server would share the database, and a busy one can miss the short
+# reuse probe below.
+HOME_SERVER_INFO="$(find_home_server "\${OWN_MANAGED_PID:-0}")"
+if [ -n "$HOME_SERVER_INFO" ]; then
+  REMOTE_PORT="\${HOME_SERVER_INFO#* }"
+  if ! wait_ready "@@T3_READY_TIMEOUT_MS@@"; then
+    printf 'T3 server %s already uses %s but is not answering on 127.0.0.1:%s. Not starting a second server against the same database.\\n' "\${HOME_SERVER_INFO%% *}" "$DEFAULT_SERVER_HOME" "$REMOTE_PORT" >&2
+    exit 1
+  fi
+  if [ -n "$OWN_MANAGED_PID" ] && kill -0 "$OWN_MANAGED_PID" 2>/dev/null; then
+    kill "$OWN_MANAGED_PID" 2>/dev/null || true
+    wait_for_pid_exit "$OWN_MANAGED_PID"
+  fi
+  rm -f "$PID_FILE"
+  printf '%s\\n' "$REMOTE_PORT" >"$PORT_FILE"
+  printf 'external\\n' >"$MANAGED_FILE"
+  REMOTE_PID=""
+  REMOTE_MANAGED="external"
+  # Fall through to the shared output instead of calling exit: in a login shell,
+  # exit runs ~/.bash_logout, whose failure (clear_console without a TTY) would
+  # become this script's status.
+  DEFAULT_RUNTIME_INFO=""
+else
+  DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port 2>/dev/null || true)"
+fi
 DEFAULT_RUNTIME_PID=""
 DEFAULT_REMOTE_PORT=""
 ADOPTED_PID=""
@@ -690,7 +732,8 @@ fi
 if [ "$REMOTE_MANAGED" = "external" ]; then
   # A server adopted above has just answered. While it is still alive, probing
   # it again could catch a momentary stall and launch a second server beside it.
-  if server_running "$ADOPTED_PID"; then
+  # A home server found above was already given the full startup window.
+  if [ -n "$HOME_SERVER_INFO" ] || server_running "$ADOPTED_PID"; then
     :
   elif [ -z "$REMOTE_PORT" ] || ! wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
     REMOTE_PID=""
@@ -894,6 +937,17 @@ export const launchOrReuseRemoteServer = Effect.fn("ssh/tunnel.launchOrReuseRemo
     ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | FileSystem.FileSystem | Path.Path
   > {
     const stateKey = yield* remoteStateKey(target);
+    if (runner?.sourceBundle !== undefined) {
+      runner = {
+        ...runner,
+        nodeScriptPath: yield* ensureRemoteSourceBundle(
+          target,
+          runner.sourceBundle,
+          buildRemoteNodeEnvScript(runner),
+          input,
+        ),
+      };
+    }
     yield* Effect.logInfo("ssh.remoteServer.launch.start", {
       ...sshTargetLogFields(target),
       ...sshRunnerLogFields(runner),
@@ -952,10 +1006,21 @@ export const issueRemotePairingToken = Effect.fn("ssh/tunnel.issueRemotePairingT
   {
     readonly credential: string;
   },
-  SshCommandError | SshInvalidTargetError | SshPairingError,
+  SshCommandError | SshInvalidTargetError | SshPairingError | SshLaunchError,
   ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | FileSystem.FileSystem | Path.Path
 > {
   const stateKey = yield* remoteStateKey(target);
+  if (runner?.sourceBundle !== undefined) {
+    runner = {
+      ...runner,
+      nodeScriptPath: yield* ensureRemoteSourceBundle(
+        target,
+        runner.sourceBundle,
+        buildRemoteNodeEnvScript(runner),
+        input,
+      ),
+    };
+  }
   yield* Effect.logDebug("ssh.remoteServer.pairingToken.start", {
     ...sshTargetLogFields(target),
     stateKey,

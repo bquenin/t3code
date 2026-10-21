@@ -19,19 +19,24 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
 import type {
   OrchestrationProjectShell,
+  OrchestrationV2ThreadShell,
   ProjectId,
   PullRequestReviewCapabilities,
   PullRequestReviewerCapabilities,
+  ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import type { ServerSettings } from "@t3tools/contracts";
 import * as ServerSettingsService from "../serverSettings.ts";
-import { PullRequestOperationError } from "@t3tools/contracts";
+import { PullRequestOperationError, ThreadId } from "@t3tools/contracts";
+import { normalizeThreadPullRequestKey } from "@t3tools/shared/threadPullRequests";
+import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 
 import * as ProjectService from "../project/ProjectService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as ProjectionStoreV2 from "../orchestration-v2/ProjectionStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as ForgejoCli from "@t3tools/source-control-forgejo/server/ForgejoCli";
@@ -527,6 +532,13 @@ function makeService(input: {
   readonly settings?: ServerSettings;
   readonly projects: ReadonlyArray<OrchestrationProjectShell>;
   readonly providers: ReadonlyArray<PullRequestProviderApi>;
+  readonly linkedPullRequests?: ReadonlyArray<
+    ThreadPullRequestLink & {
+      readonly projectId: ProjectId;
+      readonly deleted?: boolean;
+      readonly archived?: boolean;
+    }
+  >;
   readonly resolveHandle?: SourceControlProviderRegistry.SourceControlProviderRegistry["Service"]["resolveHandle"];
   readonly resolveRepositoryIdentity?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"]["resolve"];
 }) {
@@ -542,6 +554,30 @@ function makeService(input: {
           PullRequestProviderRegistry.PullRequestProviderRegistry,
           PullRequestProviderRegistry.fromProviders(input.providers),
         ),
+        Layer.mock(ProjectionStoreV2.ProjectionStoreV2)({
+          // One thread per saved link; the store already leaves deleted threads out.
+          getShellSnapshot: (options) => {
+            const shells = (input.linkedPullRequests ?? [])
+              .filter((link) => !link.deleted)
+              .filter(
+                (link) => options?.projectId === undefined || link.projectId === options.projectId,
+              )
+              .map(
+                ({ projectId, archived, deleted: _deleted, ...link }) =>
+                  ({
+                    projectId,
+                    archivedAt: archived ? "2026-07-02T00:00:00Z" : null,
+                    pullRequests: [link],
+                  }) as unknown as OrchestrationV2ThreadShell,
+              );
+            return Effect.succeed({
+              schemaVersion: 1,
+              snapshotSequence: 0,
+              threads: shells.filter((thread) => thread.archivedAt === null),
+              archivedThreads: shells.filter((thread) => thread.archivedAt !== null),
+            });
+          },
+        }),
         Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
           resolveLink: () => undefined,
           resolveHandle:
@@ -645,6 +681,157 @@ it.effect("reports each host's actions with its summary, so rows can offer them 
     const result = yield* service.list({ state: "open" });
 
     assert.deepStrictEqual(result.providers[0]?.actions, ["merge", "close"]);
+  }),
+);
+
+function savedPullRequest(url: string) {
+  const parsed = parseChangeRequestUrl(url);
+  assert.ok(parsed);
+  return {
+    ...normalizeThreadPullRequestKey(parsed),
+    threadId: ThreadId.make("linked-thread"),
+    projectId: "home" as ProjectId,
+    url,
+    source: "agent" as const,
+    linkedAt: "2026-07-01T00:00:00Z",
+    snapshot: null,
+    stack: null,
+  };
+}
+
+it.effect.each([
+  ["github", "https://github.com/team/nested-repo/pull/7"],
+  ["github", "https://github.acme.test/team/nested-repo/pull/7"],
+  ["gitlab", "https://code.acme.test/team/subgroup/nested-repo/-/merge_requests/7"],
+  ["forgejo", "http://forge.acme.test:3000/git/team/nested-repo/pulls/7"],
+  ["bitbucket", "https://bitbucket.org/team/nested-repo/pull-requests/7"],
+] as const)("reads and updates a saved PR from a parent folder: $1", ([kind, url]) =>
+  Effect.gen(function* () {
+    const link = savedPullRequest(url);
+    const seen: Array<{
+      operation: string;
+      cwd: string;
+      repository: string;
+      host: string | undefined;
+    }> = [];
+    const record = (
+      operation: string,
+      input: { cwd: string; repository: string; host?: string },
+    ) => {
+      seen.push({ operation, cwd: input.cwd, repository: input.repository, host: input.host });
+    };
+    const summary = { ...changeRequest(7, "2026-07-02T00:00:00Z"), url };
+    const service = yield* makeService({
+      projects: [project({ id: "home", title: "Home", workspaceRoot: "/home/person" })],
+      linkedPullRequests: [link],
+      providers: [
+        fakeProvider(SourceControlProviderKind.make(kind), {
+          getChangeRequestSummary: (input) =>
+            Effect.sync(() => {
+              record("summary", input);
+              return summary;
+            }),
+          getChangeRequest: (input) =>
+            Effect.sync(() => {
+              record("detail", input);
+              return { ...hostedChangeRequest("Nested repository PR"), ...summary };
+            }),
+          getDiff: (input) =>
+            Effect.sync(() => {
+              record("diff", input);
+              return { patch: "nested diff", truncated: false, nextCursor: null };
+            }),
+          runAction: (input) => Effect.sync(() => record("close", input)),
+        }),
+      ],
+    });
+    const reference = {
+      projectId: link.projectId,
+      host: link.host,
+      repository: link.repository,
+      number: link.number,
+    };
+    const result = yield* service.summary(reference, { recoverTransientFailure: false });
+    assert.strictEqual(result.url, url);
+    assert.strictEqual((yield* service.detail(reference)).body, "Nested repository PR");
+    assert.strictEqual((yield* service.diff(reference)).patch, "nested diff");
+    yield* service.runAction({ ...reference, action: "close" });
+    for (const operation of ["summary", "detail", "diff", "close"]) {
+      assert.ok(seen.some((call) => call.operation === operation));
+    }
+    for (const call of seen) {
+      assert.strictEqual(call.cwd, "/home/person");
+      assert.strictEqual(call.host, link.host);
+      assert.strictEqual(call.repository, link.repository);
+    }
+  }),
+);
+
+it.effect.each([
+  "missing link",
+  "different host",
+  "different repository",
+  "different number",
+  "different project",
+  "deleted thread",
+  "dismissed link",
+  "mismatched URL",
+] as const)("refuses a parent-folder PR with a %s", (scenario) =>
+  Effect.gen(function* () {
+    const link = savedPullRequest(
+      "https://code.acme.test/team/subgroup/nested-repo/-/merge_requests/7",
+    );
+    const service = yield* makeService({
+      projects: [project({ id: "home", title: "Home", workspaceRoot: "/home/person" })],
+      linkedPullRequests:
+        scenario === "missing link"
+          ? []
+          : [
+              {
+                ...link,
+                ...(scenario === "different project" ? { projectId: "other" as ProjectId } : {}),
+                ...(scenario === "deleted thread" ? { deleted: true } : {}),
+                ...(scenario === "dismissed link" ? { source: "stack-dismissed" as const } : {}),
+                ...(scenario === "mismatched URL"
+                  ? { url: "https://gitlab.com/team/subgroup/nested-repo/-/merge_requests/7" }
+                  : {}),
+              },
+            ],
+      providers: [
+        fakeProvider(SourceControlProviderKind.make("gitlab"), {
+          getChangeRequestSummary: () => Effect.die("must not read an unrelated PR"),
+          runAction: () => Effect.die("must not update an unrelated PR"),
+        }),
+      ],
+    });
+    const reference = {
+      projectId: link.projectId,
+      // Self-hosted GitLab: public hosts and GitHub Enterprise are readable without a link.
+      host: scenario === "different host" ? "code.other.test" : link.host,
+      repository: scenario === "different repository" ? "team/other" : link.repository,
+      number: scenario === "different number" ? 8 : link.number,
+    };
+    const error = yield* Effect.flip(
+      service.summary(reference, { recoverTransientFailure: false }),
+    );
+    assert.strictEqual(error._tag, "PullRequestUnavailableError");
+    assert.strictEqual(
+      (yield* Effect.flip(service.runAction({ ...reference, action: "close" })))._tag,
+      "PullRequestUnavailableError",
+    );
+  }),
+);
+
+it.effect("still requires an Azure checkout for a saved parent-folder PR", () =>
+  Effect.gen(function* () {
+    const link = savedPullRequest("https://dev.azure.com/org/project/_git/repo/pullrequest/7");
+    const service = yield* makeService({
+      projects: [project({ id: "home", title: "Home", workspaceRoot: "/home/person" })],
+      linkedPullRequests: [link],
+      providers: [fakeProvider(SourceControlProviderKind.make("azure-devops"))],
+    });
+    const error = yield* Effect.flip(service.summary(link, { recoverTransientFailure: false }));
+    assert.strictEqual(error._tag, "PullRequestUnavailableError");
   }),
 );
 

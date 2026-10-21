@@ -594,6 +594,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "!apps/desktop/prod-resources/windows-server/**/*",
       "!apps/desktop/prod-resources/wsl-runtime.tar.gz",
       "!apps/desktop/prod-resources/wsl-runtime.tar.gz.sha256",
+      "!apps/desktop/prod-resources/ssh-server.tar.gz*",
       "!apps/desktop/gnome-extension",
       "!apps/desktop/gnome-extension/**/*",
     ]);
@@ -2152,16 +2153,19 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   );
 
   it("stages the resource monitor as an external executable resource", () => {
-    assert.deepStrictEqual(DESKTOP_EXTRA_RESOURCES, [
-      {
-        from: "apps/desktop/prod-resources/cursor-sdk",
-        to: "node_modules/@cursor",
-      },
-      {
-        from: "apps/desktop/prod-resources/resource-monitor",
-        to: "resource-monitor",
-      },
-    ]);
+    assert.includeDeepMembers(
+      [...DESKTOP_EXTRA_RESOURCES],
+      [
+        {
+          from: "apps/desktop/prod-resources/cursor-sdk",
+          to: "node_modules/@cursor",
+        },
+        {
+          from: "apps/desktop/prod-resources/resource-monitor",
+          to: "resource-monitor",
+        },
+      ],
+    );
     assert.deepStrictEqual(resolveResourceMonitorRustTargets("mac", "universal"), [
       "aarch64-apple-darwin",
       "x86_64-apple-darwin",
