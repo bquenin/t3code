@@ -151,6 +151,18 @@ describe("detectSourceControlProviderFromRemoteUrl", () => {
     ).toBe("bitbucket");
   });
 
+  it("keeps Azure DevOps organizations named like a GitHub host on Azure", () => {
+    expect(
+      detectSourceControlProviderFromRemoteUrl(
+        "https://github-dev.visualstudio.com/project/_git/repo",
+      )?.kind,
+    ).toBe("azure-devops");
+    expect(
+      detectSourceControlProviderFromRemoteUrl("https://github.visualstudio.com/project/_git/repo")
+        ?.kind,
+    ).toBe("azure-devops");
+  });
+
   it("does not match provider names embedded in unrelated DNS labels", () => {
     expect(
       detectSourceControlProviderFromRemoteUrl("https://notgithub.example.com/owner/repo.git")

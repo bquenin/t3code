@@ -242,6 +242,16 @@ export function detectSourceControlProviderFromRemoteUrl(
     };
   }
 
+  // Azure's domains are fixed, while legacy organization subdomains such as
+  // `github-dev.visualstudio.com` would otherwise pass the self-hosted naming rules below.
+  if (isAzureDevOpsHost(hostname)) {
+    return {
+      kind: SourceControlProviderKind.make("azure-devops"),
+      name: "Azure DevOps",
+      baseUrl: toBaseUrl(host),
+    };
+  }
+
   if (isGitHubHost(hostname)) {
     return {
       kind: SourceControlProviderKind.make("github"),
@@ -254,14 +264,6 @@ export function detectSourceControlProviderFromRemoteUrl(
     return {
       kind: SourceControlProviderKind.make("gitlab"),
       name: hostname === "gitlab.com" ? "GitLab" : "GitLab Self-Hosted",
-      baseUrl: toBaseUrl(host),
-    };
-  }
-
-  if (isAzureDevOpsHost(hostname)) {
-    return {
-      kind: SourceControlProviderKind.make("azure-devops"),
-      name: "Azure DevOps",
       baseUrl: toBaseUrl(host),
     };
   }
