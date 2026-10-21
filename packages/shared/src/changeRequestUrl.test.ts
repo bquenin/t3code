@@ -2,6 +2,7 @@ import { ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  changeRequestProviderKind,
   changeRequestUrlFor,
   matchesLinkedPullRequestUrl,
   parseChangeRequestUrl,
@@ -9,6 +10,22 @@ import {
   siblingPullRequestUrl,
 } from "./changeRequestUrl.ts";
 import { normalizeThreadPullRequestKey } from "./threadPullRequests.ts";
+
+describe("changeRequestProviderKind", () => {
+  it.each([
+    ["https://github.com/team/repo/pull/7", "github"],
+    ["https://github.acme.test/team/repo/pull/7/files", "github"],
+    ["https://code.acme.test/team/pulls/123/repo/-/merge_requests/7", "gitlab"],
+    ["http://github.internal:3000/git/team/repo/pulls/7", "forgejo"],
+    ["https://bitbucket.org/team/repo/pull-requests/7", "bitbucket"],
+    ["https://dev.azure.com/org/project/_git/repo/pullrequest/7", "azure-devops"],
+    ["https://org.visualstudio.com/project/_git/repo/pullrequest/7", "azure-devops"],
+    ["https://github.com/team/repo/issues/7", null],
+    ["not a URL", null],
+  ] as const)("identifies the provider for %s", (url, provider) => {
+    expect(changeRequestProviderKind(url)).toBe(provider);
+  });
+});
 
 describe("parseChangeRequestUrl", () => {
   it("reads a GitHub pull request, lower-casing the repository", () => {

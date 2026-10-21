@@ -4,17 +4,28 @@ import { useNavigate } from "@tanstack/react-router";
 import { type MouseEvent } from "react";
 
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
-import { parseChangeRequestUrl, type ChangeRequestLink } from "@t3tools/shared/changeRequestUrl";
+import {
+  changeRequestProviderKind,
+  parseChangeRequestUrl,
+  type ChangeRequestLink,
+} from "@t3tools/shared/changeRequestUrl";
+import {
+  threadPullRequestKeysEqual,
+  visibleThreadPullRequests,
+} from "@t3tools/shared/threadPullRequests";
 import { sourceControlRepositorySelector } from "@t3tools/shared/sourceControl";
 
 import { useOpenLink } from "../browser/useOpenLink";
 import { useClientSettings } from "../hooks/useSettings";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { useRightPanelStore } from "../rightPanelStore";
-import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import type {
+  EnvironmentProject,
+  EnvironmentThreadShell,
+} from "@t3tools/client-runtime/state/shell";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { readProjects, useProjects } from "../state/entities";
+import { readProjects, readThreadShell, readThreadShells, useProjects } from "../state/entities";
 import { environmentServerConfigsAtom, serverEnvironment } from "../state/server";
 import { usePrimaryEnvironmentId } from "../state/environments";
 
@@ -96,6 +107,28 @@ export function findProjectOnChangeRequestHost(
   });
 }
 
+/** A saved thread link can be read even when its project is a parent folder of the checkout. */
+export function findProjectForLinkedChangeRequest(
+  projects: ReadonlyArray<EnvironmentProject>,
+  targetUrl: string,
+  thread: Pick<EnvironmentThreadShell, "environmentId" | "projectId" | "pullRequests"> | null,
+): EnvironmentProject | undefined {
+  if (thread === null) return undefined;
+  const link = parseChangeRequestUrl(targetUrl);
+  // Azure derives its organization and project from a checkout, even for an explicit URL.
+  if (link === null || changeRequestProviderKind(targetUrl) === "azure-devops") return undefined;
+  if (
+    !visibleThreadPullRequests(thread.pullRequests).some((saved) =>
+      threadPullRequestKeysEqual(saved, link),
+    )
+  ) {
+    return undefined;
+  }
+  return projects.find(
+    (project) => project.environmentId === thread.environmentId && project.id === thread.projectId,
+  );
+}
+
 export function shouldOpenPullRequestExternally(
   event: Pick<MouseEvent<HTMLElement>, "metaKey" | "ctrlKey"> &
     Partial<Pick<MouseEvent<HTMLElement>, "button">>,
@@ -147,6 +180,19 @@ export function useOpenChangeRequestLink(
                 Number(left.environmentId === primaryEnvironmentId),
             );
     const exactProject = findProjectForChangeRequest(projects, parsed);
+    const findLinkedProject = () => {
+      const supported = projects.filter(
+        (candidate) =>
+          serverConfigs.get(candidate.environmentId)?.environment.capabilities
+            .pullRequestsWithoutCheckout === true,
+      );
+      if (supported.length === 0) return undefined;
+      const threads = resolvedThreadRef ? [readThreadShell(resolvedThreadRef)] : readThreadShells();
+      const linked = new Set(
+        threads.map((thread) => findProjectForLinkedChangeRequest(supported, targetUrl, thread)),
+      );
+      return supported.find((project) => linked.has(project));
+    };
     const project =
       exactProject ??
       (resolvedPanelRef
@@ -158,7 +204,8 @@ export function useOpenChangeRequestLink(
             ),
             parsed,
           )
-        : undefined);
+        : undefined) ??
+      findLinkedProject();
     if (project === undefined || !reads(project.environmentId)) return false;
     const repository =
       serverConfigs.get(project.environmentId)?.environment.capabilities.threadPullRequests === true

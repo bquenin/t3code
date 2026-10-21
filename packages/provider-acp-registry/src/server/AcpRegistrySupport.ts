@@ -49,6 +49,33 @@ import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSession
 
 const ACP_REGISTRY_URL = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 
+/**
+ * Local patch: `cursor-agent acp` offers one fixed variant per model unless the
+ * client asks for the parameterized picker, which splits a model into a base id
+ * plus separate reasoning effort, context, and fast options. The pre-SDK Cursor
+ * driver sent the same flag. Used by the probe, the management runtime, and the
+ * session adapter so the advertised models match what a session accepts. A
+ * local command keeps the form's stale agentId, which the adapter ignores, so
+ * only the registry source counts.
+ */
+export function acpRegistryClientCapabilitiesMeta(
+  settings: Pick<AcpRegistrySettings, "source" | "agentId">,
+): Record<string, boolean> | undefined {
+  return settings.source === "registry" && settings.agentId === "cursor"
+    ? { parameterizedModelPicker: true }
+    : undefined;
+}
+
+/**
+ * With the parameterized picker, Cursor rejects the combined ids it advertises
+ * without it (`grok-4.7[context=256k,reasoning_effort=high,fast=true]`), which
+ * older threads and saved defaults still carry. Keep only the base model; the
+ * separate options apply on top.
+ */
+export function resolveAcpRegistryCursorModelId(model: string): string {
+  return model.replace(/\[[^\]]*\]$/u, "");
+}
+
 const MAX_REGISTRY_BYTES = 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024;
 const MAX_PACKAGE_MANIFEST_BYTES = 1024 * 1024;

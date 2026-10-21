@@ -138,6 +138,33 @@ const makeFakeUvToolchain = Effect.fn("AcpRegistrySupport.test.makeFakeUvToolcha
 });
 
 describe("AcpRegistrySupport", () => {
+  it("asks only the registry Cursor agent for the parameterized model picker", () => {
+    const meta = (settings: Partial<AcpRegistrySettings>) =>
+      AcpRegistrySupport.acpRegistryClientCapabilitiesMeta(
+        Schema.decodeSync(AcpRegistrySettings)(settings),
+      );
+    expect(meta({ agentId: "cursor" })).toEqual({ parameterizedModelPicker: true });
+    // Switching to a local command keeps the form's agentId, which the session adapter ignores.
+    expect(
+      meta({ source: "local", agentId: "cursor", commandPath: "/usr/local/bin/cursor-agent" }),
+    ).toBeUndefined();
+    expect(meta({ agentId: "mock-agent" })).toBeUndefined();
+  });
+
+  it("reduces Cursor's combined model ids to the base model", () => {
+    expect(
+      AcpRegistrySupport.resolveAcpRegistryCursorModelId(
+        "grok-4.7[context=256k,reasoning_effort=high,fast=true]",
+      ),
+    ).toBe("grok-4.7");
+    expect(AcpRegistrySupport.resolveAcpRegistryCursorModelId("gemini-3.1-pro[]")).toBe(
+      "gemini-3.1-pro",
+    );
+    expect(AcpRegistrySupport.resolveAcpRegistryCursorModelId("claude-opus-5-5")).toBe(
+      "claude-opus-5-5",
+    );
+  });
+
   it("selects the preferred compatible distribution", () => {
     const agent = makeAgent({
       binary: {
