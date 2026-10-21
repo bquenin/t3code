@@ -58,6 +58,19 @@ describe("parseChangeRequestUrl", () => {
     ).toBe("https://code.github.example.com/acme/web/pull/42");
   });
 
+  it("reads a per-environment GitHub Enterprise Server host", () => {
+    expect(parseChangeRequestUrl("https://github-dev.example.com/acme/web/pull/7")).toEqual({
+      host: "github-dev.example.com",
+      repository: "acme/web",
+      number: 7,
+    });
+    expect(
+      pullRequestCandidateUrlFromReferenceAutolink(
+        "https://github-dev.example.com/acme/web/issues/7",
+      ),
+    ).toBe("https://github-dev.example.com/acme/web/pull/7");
+  });
+
   it("reads a GitLab merge request on any host, nested groups and all", () => {
     expect(
       parseChangeRequestUrl("https://gitlab.com/t3tools/platform/t3code/-/merge_requests/42"),

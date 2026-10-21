@@ -179,9 +179,16 @@ function hasDnsLabel(host: string, label: string): boolean {
   return host.split(".").includes(label);
 }
 
-/** `*.ghe.com` is GitHub Enterprise Cloud with data residency, one subdomain per enterprise. */
-function isGitHubHost(host: string): boolean {
-  return host === "github.com" || host.endsWith(".ghe.com") || hasDnsLabel(host, "github");
+/**
+ * Enterprise Server hosts also come per environment, such as `github-dev.example.com`.
+ * `*.ghe.com` is GitHub Enterprise Cloud with data residency, one subdomain per enterprise.
+ */
+export function isGitHubHost(host: string): boolean {
+  return (
+    host === "github.com" ||
+    host.endsWith(".ghe.com") ||
+    host.split(".").some((label) => label === "github" || label.startsWith("github-"))
+  );
 }
 
 function isGitLabHost(host: string): boolean {
@@ -239,6 +246,16 @@ export function detectSourceControlProviderFromRemoteUrl(
     };
   }
 
+  // Azure's domains are fixed, while legacy organization subdomains such as
+  // `github-dev.visualstudio.com` would otherwise pass the self-hosted naming rules below.
+  if (isAzureDevOpsHost(hostname)) {
+    return {
+      kind: SourceControlProviderKind.make("azure-devops"),
+      name: "Azure DevOps",
+      baseUrl: toBaseUrl(host),
+    };
+  }
+
   if (isGitHubHost(hostname)) {
     return {
       kind: SourceControlProviderKind.make("github"),
@@ -251,14 +268,6 @@ export function detectSourceControlProviderFromRemoteUrl(
     return {
       kind: SourceControlProviderKind.make("gitlab"),
       name: hostname === "gitlab.com" ? "GitLab" : "GitLab Self-Hosted",
-      baseUrl: toBaseUrl(host),
-    };
-  }
-
-  if (isAzureDevOpsHost(hostname)) {
-    return {
-      kind: SourceControlProviderKind.make("azure-devops"),
-      name: "Azure DevOps",
       baseUrl: toBaseUrl(host),
     };
   }

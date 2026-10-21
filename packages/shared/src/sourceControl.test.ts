@@ -79,6 +79,10 @@ describe("detectSourceControlProviderFromRemoteUrl", () => {
       detectSourceControlProviderFromRemoteUrl("https://github.example.com/owner/repo.git")?.kind,
     ).toBe("github");
     expect(
+      detectSourceControlProviderFromRemoteUrl("https://github-dev.example.com/owner/repo.git")
+        ?.kind,
+    ).toBe("github");
+    expect(
       detectSourceControlProviderFromRemoteUrl("https://gitlab.example.com/group/repo.git")?.kind,
     ).toBe("gitlab");
     expect(
@@ -103,9 +107,25 @@ describe("detectSourceControlProviderFromRemoteUrl", () => {
     );
   });
 
+  it("keeps Azure DevOps organizations named like a GitHub host on Azure", () => {
+    expect(
+      detectSourceControlProviderFromRemoteUrl(
+        "https://github-dev.visualstudio.com/project/_git/repo",
+      )?.kind,
+    ).toBe("azure-devops");
+    expect(
+      detectSourceControlProviderFromRemoteUrl("https://github.visualstudio.com/project/_git/repo")
+        ?.kind,
+    ).toBe("azure-devops");
+  });
+
   it("does not match provider names embedded in unrelated DNS labels", () => {
     expect(
       detectSourceControlProviderFromRemoteUrl("https://notgithub.example.com/owner/repo.git")
+        ?.kind,
+    ).toBe("unknown");
+    expect(
+      detectSourceControlProviderFromRemoteUrl("https://notgithub-dev.example.com/owner/repo.git")
         ?.kind,
     ).toBe("unknown");
     expect(
