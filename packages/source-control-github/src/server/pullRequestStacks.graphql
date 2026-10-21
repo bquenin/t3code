@@ -1,0 +1,21 @@
+# Sent to github.com only: Enterprise Server has no pull request stacks. GraphQL validates a whole
+# document before `@include` or `@skip` can leave anything out, so a stack field in a document that
+# Enterprise Server also reads fails that read outright. Stack membership is read here instead, and
+# merged into the summaries and listing rows read elsewhere.
+#
+# One pull request per operation, which `GraphQLResolver.aliased` repeats under an alias per pull
+# request.
+query PullRequestStackMembership($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      stack {
+        number
+        size
+        baseRefName
+      }
+      stackEntry {
+        position
+      }
+    }
+  }
+}
