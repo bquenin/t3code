@@ -1,8 +1,7 @@
 # One pull request per operation. `GraphQLResolver.aliased` repeats each under an alias per
 # pull request, so a batch is one request and a missing pull request fails only its own slice.
-# `stacks` is false off github.com: Enterprise Server has no pull request stacks.
 
-query PullRequestSummary($owner: String!, $name: String!, $number: Int!, $stacks: Boolean!) {
+query PullRequestSummary($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       number
@@ -44,14 +43,6 @@ query PullRequestSummary($owner: String!, $name: String!, $number: Int!, $stacks
           }
         }
       }
-      stack @include(if: $stacks) {
-        number
-        size
-        baseRefName
-      }
-      stackEntry @include(if: $stacks) {
-        position
-      }
     }
   }
 }
@@ -61,21 +52,6 @@ query PullRequestStats($owner: String!, $name: String!, $number: Int!) {
     pullRequest(number: $number) {
       additions
       deletions
-    }
-  }
-}
-
-query PullRequestStackMembership($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      stack {
-        number
-        size
-        baseRefName
-      }
-      stackEntry {
-        position
-      }
     }
   }
 }

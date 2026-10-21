@@ -77,24 +77,6 @@ export const PullRequestSummaryRepositoryPullRequestCommitsPullRequestCommitConn
 })
 export interface PullRequestSummaryRepositoryPullRequestCommitsPullRequestCommitConnection extends Schema.Struct.Type<typeof PullRequestSummaryRepositoryPullRequestCommitsPullRequestCommitConnection.fields> {}
 
-/** A stack of PullRequests */
-export const PullRequestStack = Schema.Struct({
-  /** A number uniquely identifying the stack within its repository */
-  number: Shared.Int,
-  /** The total number of pull requests in the stack */
-  size: Shared.Int,
-  /** The branch that the stack's pull requests target */
-  baseRefName: Schema.String
-})
-export interface PullRequestStack extends Schema.Struct.Type<typeof PullRequestStack.fields> {}
-
-/** A member of a PullRequestStack */
-export const PullRequestStackEntry = Schema.Struct({
-  /** This entry's position in the stack, where 1 is the closest to the base branch, 2 is stacked on top of 1, etc. */
-  position: Shared.Int
-})
-export interface PullRequestStackEntry extends Schema.Struct.Type<typeof PullRequestStackEntry.fields> {}
-
 /** A repository pull request. */
 export const PullRequestSummaryRepositoryPullRequestPullRequest = Schema.Struct({
   /** Identifies the pull request number. */
@@ -135,11 +117,7 @@ export const PullRequestSummaryRepositoryPullRequestPullRequest = Schema.Struct(
   /** A list of latest reviews per user associated with the pull request that are not also pending review. */
   latestReviews: Schema.NullOr(LatestReviewsPullRequestReviewConnection),
   /** A list of commits present in this pull request's head branch not present in the base branch. */
-  commits: PullRequestSummaryRepositoryPullRequestCommitsPullRequestCommitConnection,
-  /** The stack this Pull Request belongs to, or null if it is not part of a stack */
-  stack: Schema.optionalKey(Schema.NullOr(PullRequestStack)),
-  /** The stack entry for this Pull Request, or null if it is not part of a stack */
-  stackEntry: Schema.optionalKey(Schema.NullOr(PullRequestStackEntry))
+  commits: PullRequestSummaryRepositoryPullRequestCommitsPullRequestCommitConnection
 })
 export interface PullRequestSummaryRepositoryPullRequestPullRequest extends Schema.Struct.Type<typeof PullRequestSummaryRepositoryPullRequestPullRequest.fields> {}
 
@@ -156,19 +134,17 @@ export const PullRequestSummary = GraphQL.query("PullRequestSummary", {
     variables: [
       { name: "owner", body: "String!" },
       { name: "name", body: "String!" },
-      { name: "number", body: "Int!" },
-      { name: "stacks", body: "Boolean!" }
+      { name: "number", body: "Int!" }
     ],
     selections: [
-      { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){pullRequest(number:$", "number", "){number title url state isDraft mergeable reviewDecision additions deletions changedFiles updatedAt mergedAt closedAt headRefName baseRefName author{__typename login avatarUrl...on User{name}}latestReviews(first:20){nodes{state author{__typename login}}}commits(last:1){nodes{commit{statusCheckRollup{state}}}}stack@include(if:$", "stacks", "){number size baseRefName}stackEntry@include(if:$", "stacks", "){position}}}"] }
+      { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){pullRequest(number:$", "number", "){number title url state isDraft mergeable reviewDecision additions deletions changedFiles updatedAt mergedAt closedAt headRefName baseRefName author{__typename login avatarUrl...on User{name}}latestReviews(first:20){nodes{state author{__typename login}}}commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}"] }
     ],
     fragments: []
   },
   variables: {
     owner: Schema.String,
     name: Schema.String,
-    number: Shared.Int,
-    stacks: Schema.Boolean
+    number: Shared.Int
   },
   result: Schema.Struct({
     /** Lookup a given repository by the owner and repository name. */
@@ -222,50 +198,6 @@ export const PullRequestStats = GraphQL.query("PullRequestStats", {
 export declare namespace PullRequestStats {
   export type Variables = typeof PullRequestStats.variables.Type
   export type Result = typeof PullRequestStats.result.Type
-}
-
-/** A repository pull request. */
-export const PullRequestStackMembershipRepositoryPullRequestPullRequest = Schema.Struct({
-  /** The stack this Pull Request belongs to, or null if it is not part of a stack */
-  stack: Schema.NullOr(PullRequestStack),
-  /** The stack entry for this Pull Request, or null if it is not part of a stack */
-  stackEntry: Schema.NullOr(PullRequestStackEntry)
-})
-export interface PullRequestStackMembershipRepositoryPullRequestPullRequest extends Schema.Struct.Type<typeof PullRequestStackMembershipRepositoryPullRequestPullRequest.fields> {}
-
-/** A repository contains the content for a project. */
-export const PullRequestStackMembershipRepositoryRepository = Schema.Struct({
-  /** Returns a single pull request from the current repository by number. */
-  pullRequest: Schema.NullOr(PullRequestStackMembershipRepositoryPullRequestPullRequest)
-})
-export interface PullRequestStackMembershipRepositoryRepository extends Schema.Struct.Type<typeof PullRequestStackMembershipRepositoryRepository.fields> {}
-
-/** `query PullRequestStackMembership` */
-export const PullRequestStackMembership = GraphQL.query("PullRequestStackMembership", {
-  document: {
-    variables: [
-      { name: "owner", body: "String!" },
-      { name: "name", body: "String!" },
-      { name: "number", body: "Int!" }
-    ],
-    selections: [
-      { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){pullRequest(number:$", "number", "){stack{number size baseRefName}stackEntry{position}}}"] }
-    ],
-    fragments: []
-  },
-  variables: {
-    owner: Schema.String,
-    name: Schema.String,
-    number: Shared.Int
-  },
-  result: Schema.Struct({
-    /** Lookup a given repository by the owner and repository name. */
-    repository: Schema.NullOr(PullRequestStackMembershipRepositoryRepository)
-  })
-})
-export declare namespace PullRequestStackMembership {
-  export type Variables = typeof PullRequestStackMembership.variables.Type
-  export type Result = typeof PullRequestStackMembership.result.Type
 }
 
 /** Represents a comment on an Issue. */
@@ -417,4 +349,4 @@ export declare namespace PullRequestWatchFingerprint {
 }
 
 /** Every operation in pullRequestBatches.graphql. */
-export const PullRequestBatchesGraphQLGroup = GraphQLGroup.make(PullRequestSummary, PullRequestStats, PullRequestStackMembership, PullRequestWatchFingerprint)
+export const PullRequestBatchesGraphQLGroup = GraphQLGroup.make(PullRequestSummary, PullRequestStats, PullRequestWatchFingerprint)
