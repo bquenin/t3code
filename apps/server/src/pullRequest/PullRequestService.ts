@@ -964,8 +964,15 @@ export const make = Effect.gen(function* () {
               onHost.find((candidate) => candidate.repositoryKey === null);
             if (route === undefined) {
               return Effect.gen(function* () {
-                const publicHost = sourceControlDefinitions.findByPublicHost(host);
-                const api = publicHost === undefined ? null : registry.get(publicHost.kind);
+                const recognized = sourceControlDefinitions.recognizeRemote(
+                  `https://${host}/${repository}.git`,
+                );
+                // GitHub Enterprise Server qualifies too: the GitHub adapter targets the
+                // reference's host explicitly and only uses a credential issued for that host.
+                const kind =
+                  sourceControlDefinitions.findByPublicHost(host)?.kind ??
+                  (recognized?.kind === "github" ? recognized.kind : undefined);
+                const api = kind === undefined ? null : registry.get(kind);
                 if (api?.readsPublicHostWithoutCheckout) {
                   const selected = yield* projects.getShell(ref.projectId).pipe(
                     Effect.mapError(

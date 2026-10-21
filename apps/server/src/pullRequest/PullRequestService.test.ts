@@ -1818,6 +1818,49 @@ it.effect("refuses Azure cross-organization reads and writes without its checkou
   }),
 );
 
+// GitHub Enterprise Server is detected from the reference's host, not a fixed list.
+it.effect("reads linked Enterprise Server PR summaries and stacks without a checkout", () =>
+  Effect.gen(function* () {
+    const host = "github.acme.com";
+    const kind = "github";
+    const seen: Array<{ cwd: string; repository: string; host: string }> = [];
+    const service = yield* makeService({
+      projects: [project({ id: "inbox", title: "Inbox", workspaceRoot: "/home/alex" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make(kind), {
+          readsPublicHostWithoutCheckout: true,
+          getChangeRequestSummary: (input) =>
+            Effect.sync(() => {
+              seen.push({ cwd: input.cwd, repository: input.repository, host: input.host });
+              return changeRequest(7, "2026-07-02T00:00:00Z");
+            }),
+          getChangeRequestStack: (input) =>
+            Effect.sync(() => {
+              seen.push({ cwd: input.cwd, repository: input.repository, host: input.host });
+              return null;
+            }),
+        }),
+      ],
+    });
+    const reference = {
+      projectId: "inbox" as ProjectId,
+      host,
+      repository: "acme/api",
+      number: 7,
+    };
+    const summary = yield* service.summary(reference, { recoverTransientFailure: false });
+    const stack = yield* service.stack(reference, { includeDetails: false });
+    assert.strictEqual(summary.title, "Change request 7");
+    assert.strictEqual(summary.state, "open");
+    assert.strictEqual(summary.projectId, reference.projectId);
+    assert.strictEqual(stack, null);
+    assert.deepStrictEqual(seen, [
+      { cwd: "/home/alex", repository: "acme/api", host },
+      { cwd: "/home/alex", repository: "acme/api", host },
+    ]);
+  }),
+);
+
 it.effect("prefers a matching checkout over a non-repository project's directory", () =>
   Effect.gen(function* () {
     const seen: string[] = [];
