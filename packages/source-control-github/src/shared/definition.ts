@@ -31,9 +31,17 @@ const REPOSITORY_PAGE_PATH = /^\/([^/]+\/[^/]+)\/(?:tree|blob)\/[^/]/u;
 
 const KIND = SourceControlProviderKind.make("github");
 
+// Fork: the user's per-environment GitHub Enterprise Server, which no upstream rule matches.
+const GITHUB_DEV_HOST = "github-dev.intuit.com";
+
 function isGitHubHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
-  return host === "github.com" || host.endsWith(".ghe.com") || host.split(".").includes("github");
+  return (
+    host === "github.com" ||
+    host.endsWith(".ghe.com") ||
+    host.split(".").includes("github") ||
+    host === GITHUB_DEV_HOST
+  );
 }
 
 function isRepositoryPath(repository: string): boolean {
