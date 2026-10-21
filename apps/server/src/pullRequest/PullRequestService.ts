@@ -806,9 +806,15 @@ export const make = Effect.gen(function* () {
               onHost.find((candidate) => candidate.repositoryKey === null);
             if (route === undefined) {
               return Effect.gen(function* () {
-                const provider = ["github.com", "bitbucket.org", "codeberg.org"].includes(host)
-                  ? detectSourceControlProviderFromRemoteUrl(`https://${host}/${repository}.git`)
-                  : null;
+                const detected = detectSourceControlProviderFromRemoteUrl(
+                  `https://${host}/${repository}.git`,
+                );
+                // GitHub Enterprise Server qualifies too: the GitHub adapter targets the
+                // reference's host explicitly and only uses a credential issued for that host.
+                const provider =
+                  detected?.kind === "github" || ["bitbucket.org", "codeberg.org"].includes(host)
+                    ? detected
+                    : null;
                 const api = provider === null ? null : registry.get(provider.kind);
                 if (api !== null) {
                   const selected = yield* projects.getShell(ref.projectId).pipe(
