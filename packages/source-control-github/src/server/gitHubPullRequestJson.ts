@@ -843,7 +843,6 @@ function toRow(
   const decodedNode = decodeRow(entry);
   if (!Exit.isSuccess(decodedNode)) return null;
   const node = decodedNode.value;
-  const stack = toStackMembership(node);
   const reviewRequests = nodesOf(node.reviewRequests).flatMap(
     (request): ReadonlyArray<ReviewRequestFields> => {
       const reviewer = request.requestedReviewer;
@@ -855,16 +854,13 @@ function toRow(
     },
   );
   return {
-    item: {
-      ...toListItem({
-        ...node,
-        latestReviews: nodesOf(node.latestReviews),
-        reviewRequests,
-        labels: nodesOf(node.labels),
-        statusCheckRollup: rollupStates(node.commits),
-      }),
-      ...(stack === undefined ? {} : { stack }),
-    },
+    item: toListItem({
+      ...node,
+      latestReviews: nodesOf(node.latestReviews),
+      reviewRequests,
+      labels: nodesOf(node.labels),
+      statusCheckRollup: rollupStates(node.commits),
+    }),
     repository: trimmed(node.repository.nameWithOwner),
   };
 }
@@ -936,11 +932,14 @@ export interface GitHubPullRequestSummary {
   readonly reviewDecision: PullRequestReviewDecision | null;
   readonly checksState: PullRequestChecksState | null;
   readonly mergeability: PullRequestMergeability;
-  /** Null means no stack; absent means not requested. */
+  /** Null means no stack; absent means not read. */
   readonly stack?: PullRequestStackMembership | null;
 }
 
-export function toPullRequestSummary(pr: SummarizedPullRequest): GitHubPullRequestSummary {
+export function toPullRequestSummary(
+  pr: SummarizedPullRequest,
+  membership?: Parameters<typeof toStackMembership>[0],
+): GitHubPullRequestSummary {
   return {
     number: pr.number,
     title: pr.title,
@@ -959,7 +958,7 @@ export function toPullRequestSummary(pr: SummarizedPullRequest): GitHubPullReque
     reviewDecision: toReviewDecisionWithReviews(pr.reviewDecision, nodesOf(pr.latestReviews)),
     checksState: rollupChecksState(rollupStates(pr.commits)),
     mergeability: toMergeability(pr.mergeable),
-    ...(pr.stack === undefined ? {} : { stack: toStackMembership(pr) ?? null }),
+    ...(membership === undefined ? {} : { stack: toStackMembership(membership) ?? null }),
   };
 }
 
