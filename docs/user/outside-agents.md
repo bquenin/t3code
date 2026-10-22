@@ -154,7 +154,8 @@ Peers need no setup beyond a token.
 
 Agents on the hub see the peers in `t3_environment_read` and pass a label as
 `environment` to `t3_project_list`, `t3_thread_list`, `t3_thread_search`,
-`t3_thread_read`, `t3_thread_send`, `t3_thread_wait` and `t3_thread_launch`.
+`t3_thread_read`, `t3_thread_send`, `t3_thread_wait`, `t3_thread_organize` and
+`t3_thread_launch`.
 
 - The hub must reach the peer's URL itself: over Tailscale, a tunnel, or an
   SSH forward. When you SSH from the peer's machine to the hub's, forward the
@@ -165,7 +166,8 @@ Agents on the hub see the peers in `t3_environment_read` and pass a label as
 - Ids from a peer only mean something there. Results from a peer carry its
   `environment`; pass the same `environment` with any thread or project id
   from them. Listing threads or launching on a peer needs a `projectId` from
-  that peer's `t3_project_list`, or `scratch: true` for a launch.
+  that peer's `t3_project_list`, or `scratch: true` for a launch. Organizing a
+  peer's thread needs its `threadId`.
 - Attachments stay in the environment they were uploaded to, so a launch on a
   peer refuses them. Put their content in the message instead.
 - To cut a hub off, revoke its session on the peer in **Settings →

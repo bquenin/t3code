@@ -197,8 +197,11 @@ type PeerAccess<P> =
   | { readonly access: "reads" | "starts" }
   | {
       readonly access: "writes";
-      /** Read on the peer first, so the target stays within this caller's limits. */
-      readonly targetThreadId: (params: P) => ThreadId;
+      /**
+       * Read on the peer first, so the target stays within this caller's
+       * limits. `undefined` means the calling thread, which a peer cannot have.
+       */
+      readonly targetThreadId: (params: P) => ThreadId | undefined;
     };
 
 const PeerTarget = Schema.Struct({
@@ -262,11 +265,18 @@ export const forwardsToPeer = <
     const encoded = yield* encodeArgs(forwarded).pipe(Effect.mapError(unavailable));
     const peers = yield* PeerEnvironments.PeerEnvironments;
     if (options.access === "writes") {
+      const threadId = options.targetThreadId(params);
+      if (threadId === undefined) {
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "threadId is required with environment.",
+        });
+      }
       const target = yield* peers
         .callTool(
           environment,
           "t3_thread_read",
-          { threadId: options.targetThreadId(params), limit: 1, maxCharsPerItem: 1 },
+          { threadId, limit: 1, maxCharsPerItem: 1 },
           { retryUncertain: true },
         )
         .pipe(
