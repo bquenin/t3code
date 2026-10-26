@@ -2838,6 +2838,197 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     );
   });
 
+  describe("Full access safety-check auto-approval", () => {
+    const AUTO_APPROVE_SETTINGS: ClaudeSettings = {
+      ...DEFAULT_CLAUDE_SETTINGS,
+      autoApproveSafetyChecksInFullAccess: true,
+    };
+    const SAFETY_CHECK = {
+      decisionReason: "Dangerous rm on a path built from a variable",
+      suppressAlwaysAllowRule: true,
+    } as const;
+
+    const openTurn = Effect.fn("openSafetyCheckTurn")(function* (input: {
+      readonly settings: ClaudeSettings;
+      readonly runtimeMode: ProviderAdapter.ProviderAdapterV2RuntimePolicy["runtimeMode"];
+      readonly cliPermissionMode?: string;
+    }) {
+      const harness = yield* makeWakeHarnessWithOptions({ settings: input.settings });
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-safety-check"),
+          text: 'Run rm -rf "$tmp".',
+          attachments: [],
+          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: input.runtimeMode,
+            interactionMode: "default",
+            cwd: "/workspace",
+          }),
+        }),
+      );
+      const options = harness.getOpenedOptions()!;
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "system",
+          subtype: "init",
+          permissionMode: input.cliPermissionMode ?? options.permissionMode,
+          uuid: "safety-check-init",
+          session_id: WAKE_NATIVE_SESSION,
+        }),
+      );
+      return { ...harness, canUseTool: options.canUseTool! };
+    });
+
+    const askRm = Effect.fn("askSafetyCheckRm")(function* (
+      turn: Effect.Success<ReturnType<typeof openTurn>>,
+      callbackOptions: Pick<
+        Parameters<NonNullable<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["canUseTool"]>>[2],
+        "decisionReason" | "matchedAskRule" | "suppressAlwaysAllowRule"
+      >,
+    ) {
+      const decision = yield* Effect.promise(() =>
+        turn.canUseTool(
+          "Bash",
+          { command: 'rm -rf "$tmp"' },
+          {
+            ...callbackOptions,
+            signal: new AbortController().signal,
+            toolUseID: "tool-safety-check",
+            requestId: "request-safety-check",
+          },
+        ),
+      ).pipe(Effect.forkScoped);
+      return yield* Effect.raceFirst(
+        Queue.take(turn.runtimeRequestReceipts).pipe(
+          Effect.map((event) => ({ type: "request", event, decision }) as const),
+        ),
+        Fiber.join(decision).pipe(Effect.map((result) => ({ type: "decision", result }) as const)),
+      );
+    });
+
+    it.effect("approves Claude's own safety checks in Full access when turned on", () =>
+      Effect.gen(function* () {
+        const turn = yield* openTurn({
+          settings: AUTO_APPROVE_SETTINGS,
+          runtimeMode: "full-access",
+        });
+        assert.equal(turn.getOpenedOptions()?.permissionMode, "bypassPermissions");
+        const first = yield* askRm(turn, SAFETY_CHECK);
+        assert.deepEqual(first, {
+          type: "decision",
+          result: {
+            behavior: "allow",
+            updatedInput: { command: 'rm -rf "$tmp"' },
+            toolUseID: "tool-safety-check",
+          },
+        });
+        assert.isFalse(turn.events.some((event) => event.type === "runtime_request.updated"));
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    it.effect.each([
+      {
+        name: "a matched ask rule with the option on",
+        settings: AUTO_APPROVE_SETTINGS,
+        runtimeMode: "full-access",
+        callbackOptions: {
+          matchedAskRule: { source: "userSettings", toolName: "Bash", ruleContent: "rm:*" },
+        },
+        fullAccessOverride: "ask_rule",
+      },
+      {
+        name: "a safety check with the option off",
+        settings: DEFAULT_CLAUDE_SETTINGS,
+        runtimeMode: "full-access",
+        callbackOptions: SAFETY_CHECK,
+        fullAccessOverride: "provider_check",
+      },
+      {
+        name: "Supervised with the option on",
+        settings: AUTO_APPROVE_SETTINGS,
+        runtimeMode: "approval-required",
+        callbackOptions: SAFETY_CHECK,
+      },
+      {
+        name: "Auto-accept edits with the option on",
+        settings: AUTO_APPROVE_SETTINGS,
+        runtimeMode: "auto-accept-edits",
+        callbackOptions: SAFETY_CHECK,
+      },
+      {
+        name: "Full access the CLI fell back from, with the option on",
+        settings: AUTO_APPROVE_SETTINGS,
+        runtimeMode: "full-access",
+        cliPermissionMode: "default",
+        callbackOptions: {},
+      },
+    ] as const)("still asks for $name", (testCase) =>
+      Effect.gen(function* () {
+        const turn = yield* openTurn(testCase);
+        const first = yield* askRm(turn, testCase.callbackOptions);
+        assert.equal(first.type, "request");
+        if (first.type !== "request") return;
+        assert.equal(first.event.runtimeRequest.kind, "command");
+        if ("fullAccessOverride" in testCase) {
+          const approvalItem = turn.events.findLast(
+            (event) =>
+              event.type === "turn_item.updated" && event.turnItem.type === "approval_request",
+          );
+          assert.equal(
+            approvalItem?.type === "turn_item.updated" &&
+              approvalItem.turnItem.type === "approval_request"
+              ? approvalItem.turnItem.fullAccessOverride
+              : "missing",
+            testCase.fullAccessOverride,
+          );
+        }
+        yield* turn.runtime.respondToRuntimeRequest({
+          requestId: first.event.runtimeRequest.id,
+          decision: "decline",
+        });
+        assert.equal((yield* Fiber.join(first.decision))?.behavior, "deny");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    it.effect("still asks when Claude settings disable bypass, with the option on", () =>
+      Effect.gen(function* () {
+        vi.mocked(ClaudeSdk.resolveSettings).mockResolvedValue({
+          effective: { permissions: { disableBypassPermissionsMode: "disable" } },
+          provenance: {},
+          sources: [],
+        });
+        const turn = yield* openTurn({
+          settings: AUTO_APPROVE_SETTINGS,
+          runtimeMode: "full-access",
+        });
+        assert.equal(turn.getOpenedOptions()?.permissionMode, "auto");
+        const first = yield* askRm(turn, SAFETY_CHECK);
+        assert.equal(first.type, "request");
+        if (first.type !== "request") return;
+        yield* turn.runtime.respondToRuntimeRequest({
+          requestId: first.event.runtimeRequest.id,
+          decision: "decline",
+        });
+        assert.equal((yield* Fiber.join(first.decision))?.behavior, "deny");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+  });
+
   describe("Plan-mode tool approval", () => {
     const openPlanTurn = Effect.fn("openPlanTurn")(function* (
       runtimeMode: "auto" | "full-access",

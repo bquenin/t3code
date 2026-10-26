@@ -734,9 +734,25 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    autoApproveSafetyChecksInFullAccess: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Auto-approve Claude safety checks in Full access",
+        description:
+          "Full access still pauses for Claude's own safety checks, such as an rm whose target it can't verify. Turn this on to approve them automatically so unattended runs never wait. Your own ask rules still prompt.",
+        providerSettingsForm: { control: "switch", clearWhenEmpty: "omit" },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "idleCompaction", "launchArgs"],
+    order: [
+      "binaryPath",
+      "homePath",
+      "autoCompactWindow",
+      "idleCompaction",
+      "autoApproveSafetyChecksInFullAccess",
+      "launchArgs",
+    ],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
