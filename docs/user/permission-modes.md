@@ -47,7 +47,10 @@ by the permission mode. See [ACP Registry permissions](./providers-acp.md#permis
 Claude can still ask in **Full access** when its settings disable bypass permissions or require
 approval for an action. Dangerous-removal safety checks in bypass mode reject the command with
 the original warning. Claude can use a safe rewrite when the warning supplies one; otherwise it
-continues without the removal and tells you what it skipped.
+continues without the removal and tells you what it skipped. To approve Claude's own safety checks
+instead, for example for unattended runs, turn on **Auto-approve Claude safety checks in Full
+access** for that Claude instance in **Settings → Providers**. Ask rules in your Claude settings
+still prompt.
 While a Claude approval is pending, type a text reply to decline that request and give feedback
 directly to the agent that asked, including a subagent. Other pending requests stay unanswered.
 
