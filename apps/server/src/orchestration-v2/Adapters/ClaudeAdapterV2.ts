@@ -3200,6 +3200,22 @@ const CLAUDE_NO_STANDING_GRANT_OPTIONS = [
   { decision: "accept", label: "Approve" },
 ] satisfies ReadonlyArray<ProviderApprovalOption>;
 
+function claudeFullAccessOverride(
+  permissionMode: PermissionMode,
+  callbackOptions: Pick<Parameters<CanUseTool>[2], "matchedAskRule">,
+): ProviderApprovalFullAccessOverride | undefined {
+  // Bypass auto-allows everything it can, so any ask that still reaches the
+  // callback is one bypass refused. The SDK drops the CLI's decision_reason_type,
+  // leaving the matched ask rule as the only way to tell the two causes apart.
+  if (permissionMode !== "bypassPermissions") return undefined;
+  return callbackOptions.matchedAskRule === undefined ? "provider_check" : "ask_rule";
+}
+
+// The reason can carry terminal escapes from the CLI's own prompt renderer.
+function claudeDecisionReason(callbackOptions: Pick<Parameters<CanUseTool>[2], "decisionReason">) {
+  return NodeUtil.stripVTControlCharacters(callbackOptions.decisionReason ?? "").trim();
+}
+
 export function claudeApprovalPresentation(input: {
   readonly permissionMode: PermissionMode;
   readonly prompt: string;
@@ -3212,19 +3228,8 @@ export function claudeApprovalPresentation(input: {
   readonly fullAccessOverride?: ProviderApprovalFullAccessOverride;
   readonly options?: ReadonlyArray<ProviderApprovalOption>;
 } {
-  // The reason can carry terminal escapes from the CLI's own prompt renderer.
-  const reason = NodeUtil.stripVTControlCharacters(
-    input.callbackOptions.decisionReason ?? "",
-  ).trim();
-  // Bypass auto-allows everything it can, so any ask that still reaches the
-  // callback is one bypass refused. The SDK drops the CLI's decision_reason_type,
-  // leaving the matched ask rule as the only way to tell the two causes apart.
-  const fullAccessOverride: ProviderApprovalFullAccessOverride | undefined =
-    input.permissionMode !== "bypassPermissions"
-      ? undefined
-      : input.callbackOptions.matchedAskRule === undefined
-        ? "provider_check"
-        : "ask_rule";
+  const reason = claudeDecisionReason(input.callbackOptions);
+  const fullAccessOverride = claudeFullAccessOverride(input.permissionMode, input.callbackOptions);
   return {
     ...(reason === "" || reason === input.prompt ? {} : { reason }),
     ...(fullAccessOverride === undefined ? {} : { fullAccessOverride }),
@@ -9278,6 +9283,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const nativeRequestId = callbackOptions.toolUseID;
           const nativeToolInput = claudeNativeToolInputFromRecord(toolInput);
           const heldForEcho = context.heldRootFrames.length > 0;
+          // Opt-in: answer Claude's own safety checks under Full access without a
+          // person, so unattended runs never wait. The CLI's reported mode must
+          // still be bypass, because a CLI that fell back to default asks for
+          // ordinary tools with no ask rule too. Ask rules keep prompting.
+          const liveQuery = yield* Ref.get(queryContext);
+          const autoApproveSafetyCheck =
+            adapterOptions.settings.autoApproveSafetyChecksInFullAccess &&
+            liveQuery?.receivedInit === true &&
+            liveQuery.permissionMode === "bypassPermissions" &&
+            claudeFullAccessOverride(context.queryPolicy.permissionMode, callbackOptions) ===
+              "provider_check";
           if (toolName === "Agent") {
             rememberClaudeSubagentLaunch(
               subagentModelCatalog,
@@ -9300,7 +9316,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (
             heldForEcho &&
             toolName !== "ExitPlanMode" &&
-            (toolName === "AskUserQuestion" || requiresClaudeApproval(context))
+            (toolName === "AskUserQuestion" ||
+              (requiresClaudeApproval(context) && !autoApproveSafetyCheck))
           ) {
             // The SDK blocks prompt echoes on permission answers; release held output except for ExitPlanMode.
             yield* releaseHeldRootFrames(context);
@@ -9409,6 +9426,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               behavior: "deny",
               message:
                 "This tool requires approval in Plan mode, but approvals are disabled for this thread.",
+              toolUseID: callbackOptions.toolUseID,
+            } satisfies PermissionResult;
+          }
+
+          if (autoApproveSafetyCheck) {
+            yield* Effect.logInfo("orchestration-v2.claude-safety-check-auto-approved", {
+              threadId: context.input.threadId,
+              providerTurnId: context.providerTurnId,
+              toolName,
+              toolUseID: callbackOptions.toolUseID,
+              decisionReason: claudeDecisionReason(callbackOptions),
+            });
+            return {
+              behavior: "allow",
+              updatedInput: toolInput,
               toolUseID: callbackOptions.toolUseID,
             } satisfies PermissionResult;
           }

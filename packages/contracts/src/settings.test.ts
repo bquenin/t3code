@@ -139,6 +139,16 @@ describe("custom model settings", () => {
   });
 });
 
+describe("Claude safety-check auto-approval", () => {
+  it("stays off unless an instance turns it on", () => {
+    expect(decodeClaudeSettings({}).autoApproveSafetyChecksInFullAccess).toBe(false);
+    expect(
+      decodeClaudeSettings({ autoApproveSafetyChecksInFullAccess: true })
+        .autoApproveSafetyChecksInFullAccess,
+    ).toBe(true);
+  });
+});
+
 describe("resolveIdleCompaction", () => {
   it("lets a Claude instance override the global default", () => {
     const settings = decodeServerSettings({
