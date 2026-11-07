@@ -69,6 +69,8 @@ const layerDesktopClerk = (
     stateDir: clerkStateDir,
     isDevelopment,
     appDataDirectory: "/tmp/app-data",
+    homeDirectory: "/tmp/home",
+    baseDir: "/tmp/home/.t3",
     platform,
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
 

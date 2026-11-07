@@ -11,6 +11,8 @@ import * as DesktopUserData from "./DesktopUserData.ts";
 const resolveWindowsUserData = (appDataDirectory: string) =>
   DesktopUserData.resolveUserDataPath({
     appDataDirectory,
+    homeDirectory: "/home/alice",
+    baseDir: "/home/alice/.t3",
     isDevelopment: false,
     platform: "win32",
   }).pipe(Effect.provide(DesktopPreReadyFileSystem.layer));
