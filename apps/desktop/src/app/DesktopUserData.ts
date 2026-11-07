@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto digest is async, and pre-ready startup must not yield before the Clerk bridge registers its privileged scheme.
+import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -34,6 +36,8 @@ export class DesktopUserDataInitializationError extends Schema.TaggedError<Deskt
 export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPath")(
   function* (input: {
     readonly appDataDirectory: string;
+    readonly homeDirectory: string;
+    readonly baseDir: string;
     readonly isDevelopment: boolean;
     readonly platform: NodeJS.Platform;
   }) {
@@ -42,7 +46,13 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
     const names = input.isDevelopment
       ? { current: "t3code-dev", legacy: "T3 Code (Dev)" }
       : { current: "t3code-v2", legacy: "T3 Code (Alpha)" };
-    const destinationPath = path.join(input.appDataDirectory, names.current);
+    const baseDir = path.resolve(input.baseDir);
+    const isCustomHome = baseDir !== path.resolve(input.homeDirectory, ".t3");
+    const sharedPath = path.join(input.appDataDirectory, names.current);
+    // Electron's single-instance lock is keyed on userData, so each custom T3 home needs its own profile.
+    const destinationPath = isCustomHome
+      ? `${sharedPath}-${NodeCrypto.createHash("sha256").update(baseDir).digest("hex").slice(0, 8)}`
+      : sharedPath;
     const legacyPath = path.join(input.appDataDirectory, names.legacy);
     const inspect = (resourcePath: string) =>
       fs
@@ -53,17 +63,27 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
           ),
         );
     if (input.isDevelopment) {
-      return (yield* inspect(legacyPath)) ? legacyPath : destinationPath;
+      return !isCustomHome && (yield* inspect(legacyPath)) ? legacyPath : destinationPath;
     }
     // Chromium databases require their own profile for each running version.
     if (input.platform !== "win32") return destinationPath;
     const destinationState = path.join(destinationPath, "Local State");
     if (yield* inspect(destinationState)) return destinationPath;
-    const legacyState = path.join(legacyPath, "Local State");
-    const sourceState = (yield* inspect(legacyState))
-      ? legacyState
-      : path.join(input.appDataDirectory, "t3code", "Local State");
-    if (!(yield* inspect(sourceState))) return destinationPath;
+    // A custom home's encrypted catalog predates its own profile, so it inherits the shared profile's key first.
+    const sourceProfiles = [
+      ...(isCustomHome ? [sharedPath] : []),
+      legacyPath,
+      path.join(input.appDataDirectory, "t3code"),
+    ];
+    let sourceState: string | undefined;
+    for (const profile of sourceProfiles) {
+      const candidate = path.join(profile, "Local State");
+      if (yield* inspect(candidate)) {
+        sourceState = candidate;
+        break;
+      }
+    }
+    if (sourceState === undefined) return destinationPath;
     // Windows safeStorage keys live here. Copy only these preferences, never locked databases.
     const state = yield* fs
       .readFileString(sourceState)
