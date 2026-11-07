@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto digest is async, and pre-ready startup must not yield before the Clerk bridge registers its privileged scheme.
+import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -34,6 +36,8 @@ export class DesktopUserDataInitializationError extends Schema.TaggedError<Deskt
 export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPath")(
   function* (input: {
     readonly appDataDirectory: string;
+    readonly homeDirectory: string;
+    readonly baseDir: string;
     readonly isDevelopment: boolean;
     readonly platform: NodeJS.Platform;
   }) {
@@ -42,6 +46,12 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
     const names = input.isDevelopment
       ? { current: "t3code-dev", legacy: "T3 Code (Dev)" }
       : { current: "t3code-v2", legacy: "T3 Code (Alpha)" };
+    const baseDir = path.resolve(input.baseDir);
+    // Electron's single-instance lock is keyed on userData, so each custom T3 home needs its own profile.
+    if (baseDir !== path.resolve(input.homeDirectory, ".t3")) {
+      const hash = NodeCrypto.createHash("sha256").update(baseDir).digest("hex").slice(0, 8);
+      return path.join(input.appDataDirectory, `${names.current}-${hash}`);
+    }
     const destinationPath = path.join(input.appDataDirectory, names.current);
     const legacyPath = path.join(input.appDataDirectory, names.legacy);
     const inspect = (resourcePath: string) =>

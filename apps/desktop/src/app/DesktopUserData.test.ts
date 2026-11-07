@@ -22,6 +22,8 @@ it.effect.each(["t3code", "T3 Code (Alpha)"])(
       yield* fs.writeFileString(path.join(source, "IndexedDB", "LOCK"), "V1 owns this database");
       yield* resolveUserDataPath({
         appDataDirectory: directory,
+        homeDirectory: "/home/alice",
+        baseDir: "/home/alice/.t3",
         isDevelopment: false,
         platform: "win32",
       });
@@ -31,6 +33,8 @@ it.effect.each(["t3code", "T3 Code (Alpha)"])(
       yield* fs.writeFileString(path.join(destination, "Local State"), "existing V2 state");
       yield* resolveUserDataPath({
         appDataDirectory: directory,
+        homeDirectory: "/home/alice",
+        baseDir: "/home/alice/.t3",
         isDevelopment: false,
         platform: "win32",
       });
@@ -39,4 +43,57 @@ it.effect.each(["t3code", "T3 Code (Alpha)"])(
         "existing V2 state",
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+const resolve = (input: {
+  readonly baseDir: string;
+  readonly isDevelopment?: boolean;
+  readonly platform?: NodeJS.Platform;
+}) =>
+  resolveUserDataPath({
+    appDataDirectory: "/appdata",
+    homeDirectory: "/home/alice",
+    isDevelopment: false,
+    platform: "darwin",
+    ...input,
+  }).pipe(Effect.provide(NodeServices.layer));
+
+it.effect("keeps the shared profile for the default T3 home, even when set explicitly", () =>
+  Effect.gen(function* () {
+    assert.equal(yield* resolve({ baseDir: "/home/alice/.t3" }), "/appdata/t3code-v2");
+    assert.equal(yield* resolve({ baseDir: "/home/alice/.t3/" }), "/appdata/t3code-v2");
+    assert.equal(yield* resolve({ baseDir: "/home/alice/x/../.t3" }), "/appdata/t3code-v2");
+  }),
+);
+
+it.effect("gives each custom T3 home its own stable profile", () =>
+  Effect.gen(function* () {
+    const personal = yield* resolve({ baseDir: "/home/alice/.t3-personal" });
+    const work = yield* resolve({ baseDir: "/home/alice/.t3-work" });
+    assert.match(personal, /^\/appdata\/t3code-v2-[0-9a-f]{8}$/);
+    assert.match(work, /^\/appdata\/t3code-v2-[0-9a-f]{8}$/);
+    assert.notEqual(personal, work);
+    assert.equal(yield* resolve({ baseDir: "/home/alice/.t3-personal/" }), personal);
+    const dev = yield* resolve({ baseDir: "/home/alice/.t3-personal", isDevelopment: true });
+    assert.equal(dev, personal.replace("t3code-v2-", "t3code-dev-"));
+  }),
+);
+
+it.effect("starts custom T3 homes on Windows without migrating legacy credential keys", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-v2-profile-" });
+    yield* fs.makeDirectory(path.join(directory, "t3code"), { recursive: true });
+    yield* fs.writeFileString(path.join(directory, "t3code", "Local State"), "{}");
+    const userDataPath = yield* resolveUserDataPath({
+      appDataDirectory: directory,
+      homeDirectory: "/home/alice",
+      baseDir: "/home/alice/.t3-personal",
+      isDevelopment: false,
+      platform: "win32",
+    });
+    assert.notEqual(userDataPath, path.join(directory, "t3code-v2"));
+    assert.isFalse(yield* fs.exists(userDataPath));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
