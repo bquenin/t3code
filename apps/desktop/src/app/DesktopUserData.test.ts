@@ -79,21 +79,28 @@ it.effect("gives each custom T3 home its own stable profile", () =>
   }),
 );
 
-it.effect("starts custom T3 homes on Windows without migrating legacy credential keys", () =>
+it.effect("keeps Windows credential keys readable when a custom T3 home gets its own profile", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-v2-profile-" });
+    const resolveCustom = (baseDir: string) =>
+      resolveUserDataPath({
+        appDataDirectory: directory,
+        homeDirectory: "/home/alice",
+        baseDir,
+        isDevelopment: false,
+        platform: "win32",
+      });
     yield* fs.makeDirectory(path.join(directory, "t3code"), { recursive: true });
-    yield* fs.writeFileString(path.join(directory, "t3code", "Local State"), "{}");
-    const userDataPath = yield* resolveUserDataPath({
-      appDataDirectory: directory,
-      homeDirectory: "/home/alice",
-      baseDir: "/home/alice/.t3-personal",
-      isDevelopment: false,
-      platform: "win32",
-    });
-    assert.notEqual(userDataPath, path.join(directory, "t3code-v2"));
-    assert.isFalse(yield* fs.exists(userDataPath));
+    yield* fs.writeFileString(path.join(directory, "t3code", "Local State"), "v1 key");
+    const fromV1 = yield* resolveCustom("/home/alice/.t3-work");
+    assert.equal(yield* fs.readFileString(path.join(fromV1, "Local State")), "v1 key");
+
+    yield* fs.makeDirectory(path.join(directory, "t3code-v2"), { recursive: true });
+    yield* fs.writeFileString(path.join(directory, "t3code-v2", "Local State"), "shared key");
+    const personal = yield* resolveCustom("/home/alice/.t3-personal");
+    assert.notEqual(personal, path.join(directory, "t3code-v2"));
+    assert.equal(yield* fs.readFileString(path.join(personal, "Local State")), "shared key");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
